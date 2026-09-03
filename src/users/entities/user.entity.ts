@@ -10,6 +10,7 @@ import {
 import { Exclude } from 'class-transformer';
 import { Role } from '../../common/enums/role.enum';
 import { LoginHistory } from './login-history.entity';
+import { Session } from '../../sessions/entities/session.entity';
 
 @Entity('users')
 export class User {
@@ -71,13 +72,12 @@ export class User {
   @Exclude({ toPlainOnly: true })
   lockedUntil?: Date;
 
-  // --- Refresh token (hashed) for rotation/revocation ---
-  @Column({ nullable: true })
-  @Exclude({ toPlainOnly: true })
-  currentRefreshTokenHash?: string;
-
+  
   @OneToMany(() => LoginHistory, (loginHistory) => loginHistory.user)
   loginHistory: LoginHistory[];
+
+  @OneToMany(() => Session, (session) => session.user)
+  sessions: Session[];
 
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;

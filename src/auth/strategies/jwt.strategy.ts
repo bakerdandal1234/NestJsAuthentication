@@ -8,6 +8,13 @@ export interface JwtPayload {
   sub: string;
   email: string;
   role: string;
+  /**
+   * Session id (Stage 3 of Session Management). Only present on refresh
+   * tokens issued after a Session is created at login. Optional so the
+   * existing refresh-token verification path (jwt.strategy validate(),
+   * AuthService.refreshTokens()) keeps working unchanged either way.
+   */
+  sid?: string;
 }
 
 @Injectable()

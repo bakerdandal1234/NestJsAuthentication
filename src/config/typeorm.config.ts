@@ -2,6 +2,7 @@ import { registerAs } from '@nestjs/config';
 import { TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { User } from '../users/entities/user.entity';
 import { LoginHistory } from '../users/entities/login-history.entity';
+import { Session } from '../sessions/entities/session.entity';
 
 export default registerAs('database', (): TypeOrmModuleOptions => ({
   type: 'postgres',
@@ -10,9 +11,11 @@ export default registerAs('database', (): TypeOrmModuleOptions => ({
   username: process.env.DB_USERNAME,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  entities: [User, LoginHistory],
-  // Never use synchronize in production - use migrations instead.
-  synchronize: process.env.NODE_ENV !== 'production',
+  entities: [User, LoginHistory, Session],
+  // Fully migration-based now (both dev and production) — synchronize is
+  // never used, to avoid drift between the schema TypeORM would infer from
+  // entities and what the migration history actually says happened.
+  synchronize: false,
   logging: process.env.NODE_ENV === 'development',
   ssl:
     process.env.NODE_ENV === 'production'

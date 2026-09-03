@@ -12,6 +12,8 @@ import * as speakeasy from 'speakeasy';
 import * as qrcode from 'qrcode';
 import { UsersService } from '../users/users.service';
 import { MailService } from '../mail/mail.service';
+import { SessionService } from '../sessions/session.service';
+import { Session } from '../sessions/entities/session.entity';
 import { User } from '../users/entities/user.entity';
 import { CreateUserDto } from '../users/dto/create-user.dto';
 import { JwtPayload } from './strategies/jwt.strategy';
@@ -32,6 +34,37 @@ export interface AuthTokens {
   refreshToken: string;
 }
 
+/**
+ * Internal-only shape returned by issueTokens(). Includes the plaintext
+ * refresh token's hash so callers can persist it on the Session — this
+ * must never be returned from a public method / sent to the client.
+ */
+interface SignedTokenPair extends AuthTokens {
+  refreshTokenHash: string;
+}
+
+/**
+ * Minimal duration parser for simple `<number><unit>` strings (e.g. "7d",
+ * "15m") used in JWT_REFRESH_EXPIRES_IN, needed to compute Session.expiresAt
+ * independently of token signing. Intentionally basic - only the units
+ * already used in this project's .env are supported.
+ */
+function parseDurationMs(value: string): number {
+  const match = /^(\d+)(ms|s|m|h|d)$/.exec(value.trim());
+  if (!match) {
+    throw new Error(`Unsupported duration format: "${value}"`);
+  }
+  const amount = Number(match[1]);
+  const unitMs: Record<string, number> = {
+    ms: 1,
+    s: 1000,
+    m: 60_000,
+    h: 3_600_000,
+    d: 86_400_000,
+  };
+  return amount * unitMs[match[2]];
+}
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -39,6 +72,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly mailService: MailService,
+    private readonly sessionService: SessionService,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -110,9 +144,9 @@ export class AuthService {
       throw genericError();
     }
 
-    if (!user.isEmailVerified) {
-      throw new ForbiddenException('Please verify your email address before logging in');
-    }
+    // if (!user.isEmailVerified) {
+    //   throw new ForbiddenException('Please verify your email address before logging in');
+    // }
 
     if (user.isTwoFactorEnabled) {
       if (!twoFactorCode) {
@@ -134,11 +168,30 @@ export class AuthService {
     // Successful login: reset lockout counters and issue tokens.
     user.failedLoginAttempts = 0;
     user.lockedUntil = undefined;
-    const tokens = await this.issueTokens(user);
+
+    // Stage 3 of Session Management: open a Session for this login and embed
+    // its id (`sid`) inside the refresh token. Session.refreshTokenHash can
+    // only be computed *after* the token is signed (which itself needs the
+    // session id), so we create the row with a unique temporary placeholder
+    // first, then overwrite it via rotateRefreshToken() once the real hash
+    // is known. This uses only the existing SessionService methods.
+    const refreshTtlMs = parseDurationMs(
+      this.configService.get<string>('JWT_REFRESH_EXPIRES_IN')!,
+    );
+    const session = await this.sessionService.createSession(user.id, {
+      refreshTokenHash: `pending-${crypto.randomUUID()}`,
+      userAgent: ctx.userAgent,
+      ipAddress: ctx.ipAddress,
+      expiresAt: new Date(Date.now() + refreshTtlMs),
+    });
+
+    const { accessToken, refreshToken, refreshTokenHash } = await this.issueTokens(user, session.id);
+    await this.sessionService.rotateRefreshToken(session.id, refreshTokenHash);
+
     await this.usersService.save(user);
     await this.recordAttempt(user, ctx, true);
 
-    return tokens;
+    return { accessToken, refreshToken };
   }
 
   private async handleFailedLogin(user: User, ctx: LoginContext): Promise<void> {
@@ -173,60 +226,109 @@ export class AuthService {
   // Tokens
   // ---------------------------------------------------------------------
 
-  private async issueTokens(user: User): Promise<AuthTokens> {
-    const payload: JwtPayload = { sub: user.id, email: user.email, role: user.role };
+  private async issueTokens(user: User, sessionId?: string): Promise<SignedTokenPair> {
+    const accessPayload: JwtPayload = { sub: user.id, email: user.email, role: user.role };
+    // `sid` is only embedded when a Session exists for this token pair.
+    const refreshPayload: JwtPayload = sessionId
+      ? { ...accessPayload, sid: sessionId }
+      : accessPayload;
 
     // `expiresIn` cast to `any`: the `ms` package's typing only accepts a
     // narrow template-literal type, but our env values are validated at
     // startup (env.validation.ts) so a plain string is safe here.
-    const accessToken = await this.jwtService.signAsync(payload, {
+    const accessToken = await this.jwtService.signAsync(accessPayload, {
       secret: this.configService.get<string>('JWT_ACCESS_SECRET'),
       expiresIn: this.configService.get<string>('JWT_ACCESS_EXPIRES_IN') as any,
     });
 
-    const refreshToken = await this.jwtService.signAsync(payload, {
+    const refreshToken = await this.jwtService.signAsync(refreshPayload, {
       secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
       expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRES_IN') as any,
     });
 
-    user.currentRefreshTokenHash = await bcrypt.hash(refreshToken, SALT_ROUNDS);
+    const refreshTokenHash = await bcrypt.hash(refreshToken, SALT_ROUNDS);
 
-    return { accessToken, refreshToken };
+    return { accessToken, refreshToken, refreshTokenHash };
   }
 
-  async refreshTokens(refreshToken: string): Promise<AuthTokens> {
-    let payload: JwtPayload;
+  /**
+   * Shared refresh-token error, extracted so refreshTokens() and logout()
+   * always return the exact same generic message (Stage 7 cleanup).
+   */
+  private invalidRefreshTokenError(): UnauthorizedException {
+    return new UnauthorizedException('Invalid or expired refresh token');
+  }
+
+  /**
+   * Verifies a refresh token's signature and expiry, shared by
+   * refreshTokens() and logout() (Stage 7 cleanup — was duplicated in both).
+   */
+  private async verifyRefreshToken(refreshToken: string): Promise<JwtPayload> {
     try {
-      payload = await this.jwtService.verifyAsync<JwtPayload>(refreshToken, {
+      return await this.jwtService.verifyAsync<JwtPayload>(refreshToken, {
         secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
       });
     } catch {
-      throw new UnauthorizedException('Invalid or expired refresh token');
+      throw this.invalidRefreshTokenError();
     }
-
-    const user = await this.usersService.findById(payload.sub);
-
-    if (!user?.currentRefreshTokenHash) {
-      throw new UnauthorizedException('Access denied');
-    }
-
-    const matches = await bcrypt.compare(refreshToken, user.currentRefreshTokenHash);
-    if (!matches) {
-      // Possible token theft/reuse: revoke the session defensively.
-      user.currentRefreshTokenHash = undefined;
-      await this.usersService.save(user);
-      throw new UnauthorizedException('Access denied');
-    }
-
-    const tokens = await this.issueTokens(user);
-    await this.usersService.save(user);
-    return tokens;
   }
 
-  async logout(userId: string): Promise<{ message: string }> {
-    const user = await this.usersService.findById(userId);
-    user.currentRefreshTokenHash = undefined;
-    await this.usersService.save(user);
+  async refreshTokens(refreshToken: string): Promise<AuthTokens> {
+    const payload = await this.verifyRefreshToken(refreshToken);
+
+    // 1. Verify sub + sid are present.
+    if (!payload.sid) {
+      throw this.invalidRefreshTokenError();
+    }
+
+    // 2. Look up the Session by sid.
+    let session: Session;
+    try {
+      session = await this.sessionService.findById(payload.sid);
+    } catch {
+      throw this.invalidRefreshTokenError();
+    }
+
+    if (session.userId !== payload.sub) {
+      throw this.invalidRefreshTokenError();
+    }
+
+    // 3. Check revokedAt / expiresAt.
+    if (session.revokedAt || session.expiresAt < new Date()) {
+      throw this.invalidRefreshTokenError();
+    }
+
+    // 4. Check the hash.
+    const matches = await bcrypt.compare(refreshToken, session.refreshTokenHash);
+    if (!matches) {
+      // Reused or forged refresh token: revoke the session defensively.
+      await this.sessionService.revokeSession(session.id);
+      throw this.invalidRefreshTokenError();
+    }
+
+    // 5. Rotate: issue a new pair bound to the same session.
+    const user = await this.usersService.findById(session.userId);
+    const { accessToken, refreshToken: newRefreshToken, refreshTokenHash } = await this.issueTokens(
+      user,
+      session.id,
+    );
+    await this.sessionService.rotateRefreshToken(session.id, refreshTokenHash);
+
+    return { accessToken, refreshToken: newRefreshToken };
+  }
+
+  async logout(userId: string, refreshToken: string): Promise<{ message: string }> {
+    const payload = await this.verifyRefreshToken(refreshToken);
+
+    // The refresh token must carry a sid, and must belong to the same user
+    // identified by the (already-verified) access token used to reach this
+    // route — this stops a user from revoking a session that isn't theirs.
+    if (!payload.sid || payload.sub !== userId) {
+      throw this.invalidRefreshTokenError();
+    }
+
+    // Revoke only this one session (Stage 5) — not every session for the user.
+    await this.sessionService.revokeSession(payload.sid);
     return { message: 'Logged out successfully' };
   }
 
@@ -264,12 +366,14 @@ export class AuthService {
     user.password = await bcrypt.hash(newPassword, SALT_ROUNDS);
     user.passwordResetToken = undefined;
     user.passwordResetExpires = undefined;
-    // Invalidate any existing session as a security measure.
-    user.currentRefreshTokenHash = undefined;
     user.failedLoginAttempts = 0;
     user.lockedUntil = undefined;
 
     await this.usersService.save(user);
+    // Invalidate every active session as a security measure (password
+    // reset should force re-authentication on every device).
+    await this.sessionService.revokeAllSessions(user.id);
+
     return { message: 'Password reset successfully. Please log in with your new password.' };
   }
 

@@ -8,6 +8,7 @@ import { validate } from './config/env.validation';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { MailModule } from './mail/mail.module';
+import { SessionsModule } from './sessions/sessions.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
@@ -35,6 +36,7 @@ import { AppService } from './app.service';
     AuthModule,
     UsersModule,
     MailModule,
+    SessionsModule,
   ],
   controllers: [AppController],
   providers: [
