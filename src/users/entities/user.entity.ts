@@ -8,7 +8,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { Exclude } from 'class-transformer';
-import { Role } from '../../common/enums/role.enum';
+import { UserRole } from './user-role.entity';
 import { LoginHistory } from './login-history.entity';
 import { Session } from '../../sessions/entities/session.entity';
 
@@ -31,8 +31,10 @@ export class User {
   @Column({ nullable: true })
   lastName?: string;
 
-  @Column({ type: 'enum', enum: Role, default: Role.USER })
-  role: Role;
+  @OneToMany(() => UserRole, (userRole) => userRole.user, {
+    cascade: true,
+  })
+  userRoles: UserRole[];
 
   // --- Email verification ---
   @Column({ default: false })
@@ -72,7 +74,7 @@ export class User {
   @Exclude({ toPlainOnly: true })
   lockedUntil?: Date;
 
-  
+
   @OneToMany(() => LoginHistory, (loginHistory) => loginHistory.user)
   loginHistory: LoginHistory[];
 

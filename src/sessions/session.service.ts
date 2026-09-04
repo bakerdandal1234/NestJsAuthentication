@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, MoreThan, Repository } from 'typeorm';
 import { Session } from './entities/session.entity';
 
 /**
@@ -13,6 +13,7 @@ export interface CreateSessionContext {
   userAgent?: string;
   ipAddress?: string;
   expiresAt: Date;
+  revokedAt?: Date;
 }
 
 /**
@@ -45,7 +46,10 @@ export class SessionService {
 
   getUserSessions(userId: string): Promise<Session[]> {
     return this.sessionRepository.find({
-      where: { userId },
+      where: { userId,
+        revokedAt: IsNull(),
+        expiresAt: MoreThan(new Date()),
+       },
       order: { createdAt: 'DESC' },
     });
   }

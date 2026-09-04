@@ -144,9 +144,9 @@ export class AuthService {
       throw genericError();
     }
 
-    // if (!user.isEmailVerified) {
-    //   throw new ForbiddenException('Please verify your email address before logging in');
-    // }
+    if (!user.isEmailVerified) {
+      throw new ForbiddenException('Please verify your email address before logging in');
+    }
 
     if (user.isTwoFactorEnabled) {
       if (!twoFactorCode) {
@@ -226,12 +226,27 @@ export class AuthService {
   // Tokens
   // ---------------------------------------------------------------------
 
+  /**
+   * bcrypt only considers the first 72 bytes of its input. Our refresh JWTs
+   * share a long identical prefix across rotations of the *same* session
+   * (header + sub/email/role/sid never change — only iat/exp/signature do,
+   * and those land past byte 72), so bcrypt.compare() could not actually
+   * tell an old, already-rotated token apart from the current one. Hashing
+   * the full token with SHA-256 first collapses the *entire* string into a
+   * fixed-length digest before bcrypt ever sees it, fixing that blind spot.
+   */
+  private hashRefreshToken(refreshToken: string): string {
+    return crypto.createHash('sha256').update(refreshToken).digest('hex');
+  }
+
   private async issueTokens(user: User, sessionId?: string): Promise<SignedTokenPair> {
     const accessPayload: JwtPayload = { sub: user.id, email: user.email, role: user.role };
     // `sid` is only embedded when a Session exists for this token pair.
     const refreshPayload: JwtPayload = sessionId
       ? { ...accessPayload, sid: sessionId }
       : accessPayload;
+
+      
 
     // `expiresIn` cast to `any`: the `ms` package's typing only accepts a
     // narrow template-literal type, but our env values are validated at
@@ -246,7 +261,7 @@ export class AuthService {
       expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRES_IN') as any,
     });
 
-    const refreshTokenHash = await bcrypt.hash(refreshToken, SALT_ROUNDS);
+    const refreshTokenHash = await bcrypt.hash(this.hashRefreshToken(refreshToken), SALT_ROUNDS);
 
     return { accessToken, refreshToken, refreshTokenHash };
   }
@@ -299,7 +314,7 @@ export class AuthService {
     }
 
     // 4. Check the hash.
-    const matches = await bcrypt.compare(refreshToken, session.refreshTokenHash);
+    const matches = await bcrypt.compare(this.hashRefreshToken(refreshToken), session.refreshTokenHash);
     if (!matches) {
       // Reused or forged refresh token: revoke the session defensively.
       await this.sessionService.revokeSession(session.id);
