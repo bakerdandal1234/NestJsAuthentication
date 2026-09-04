@@ -91,9 +91,8 @@ export class AuthService {
       emailVerificationToken,
       emailVerificationExpires: new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS),
     });
-
-    await this.mailService.sendEmailVerification(user.email, emailVerificationToken);
     await this.authorizationService.assignRoleByName(user.id,'user');
+    await this.mailService.sendEmailVerification(user.email, emailVerificationToken);
 
     return { message: 'Registration successful. Please check your email to verify your account.' };
   }
