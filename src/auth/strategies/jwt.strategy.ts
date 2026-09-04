@@ -7,7 +7,6 @@ import { UsersService } from '../../users/users.service';
 export interface JwtPayload {
   sub: string;
   email: string;
-  role: string;
   /**
    * Session id (Stage 3 of Session Management). Only present on refresh
    * tokens issued after a Session is created at login. Optional so the

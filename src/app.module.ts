@@ -14,6 +14,8 @@ import { RolesGuard } from './common/guards/roles.guard';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { AuthorizationModule } from './authorization/authorization.module';
+import { PermissionsGuard } from './common/guards/permissions.guard';
 
 @Module({
   imports: [
@@ -37,6 +39,7 @@ import { AppService } from './app.service';
     UsersModule,
     MailModule,
     SessionsModule,
+    AuthorizationModule,
   ],
   controllers: [AppController],
   providers: [
@@ -47,6 +50,7 @@ import { AppService } from './app.service';
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     // Global RBAC: enforces @Roles(...) where present.
     { provide: APP_GUARD, useClass: RolesGuard },
+    { provide: APP_GUARD, useClass: PermissionsGuard },
     // Normalizes all error responses.
     { provide: APP_FILTER, useClass: HttpExceptionFilter },
   ],

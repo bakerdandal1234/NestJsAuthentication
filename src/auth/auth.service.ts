@@ -17,6 +17,7 @@ import { Session } from '../sessions/entities/session.entity';
 import { User } from '../users/entities/user.entity';
 import { CreateUserDto } from '../users/dto/create-user.dto';
 import { JwtPayload } from './strategies/jwt.strategy';
+import { AuthorizationService } from '../authorization/authorization.service';
 
 const SALT_ROUNDS = 12;
 const MAX_FAILED_ATTEMPTS = 5;
@@ -73,6 +74,7 @@ export class AuthService {
     private readonly configService: ConfigService,
     private readonly mailService: MailService,
     private readonly sessionService: SessionService,
+    private readonly authorizationService: AuthorizationService,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -91,6 +93,7 @@ export class AuthService {
     });
 
     await this.mailService.sendEmailVerification(user.email, emailVerificationToken);
+    await this.authorizationService.assignRoleByName(user.id, 'user');
 
     return { message: 'Registration successful. Please check your email to verify your account.' };
   }
@@ -240,7 +243,7 @@ export class AuthService {
   }
 
   private async issueTokens(user: User, sessionId?: string): Promise<SignedTokenPair> {
-    const accessPayload: JwtPayload = { sub: user.id, email: user.email, role: user.role };
+    const accessPayload: JwtPayload = { sub: user.id, email: user.email };
     // `sid` is only embedded when a Session exists for this token pair.
     const refreshPayload: JwtPayload = sessionId
       ? { ...accessPayload, sid: sessionId }
