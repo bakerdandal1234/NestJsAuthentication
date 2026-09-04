@@ -7,12 +7,6 @@ import { UsersService } from '../../users/users.service';
 export interface JwtPayload {
   sub: string;
   email: string;
-  /**
-   * Session id (Stage 3 of Session Management). Only present on refresh
-   * tokens issued after a Session is created at login. Optional so the
-   * existing refresh-token verification path (jwt.strategy validate(),
-   * AuthService.refreshTokens()) keeps working unchanged either way.
-   */
   sid?: string;
 }
 
@@ -25,16 +19,38 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: configService.get<string>('JWT_ACCESS_SECRET')!,
+      secretOrKey:
+        configService.get<string>('JWT_ACCESS_SECRET')!,
     });
   }
 
   async validate(payload: JwtPayload) {
-    const user = await this.usersService.findById(payload.sub);
+    const user =
+      await this.usersService.findByIdWithAuthorization(
+        payload.sub,
+      );
+
     if (!user) {
       throw new UnauthorizedException();
     }
-    // Attached to request.user; kept minimal on purpose.
-    return { id: user.id, email: user.email, role: user.role };
+
+    const roles = user.userRoles.map(
+      (userRole) => userRole.role.name,
+    );
+
+    const permissions = user.userRoles.flatMap(
+      (userRole) =>
+        userRole.role.rolePermissions.map(
+          (rolePermission) =>
+            `${rolePermission.permission.resource}:${rolePermission.permission.action}`,
+        ),
+    );
+
+    return {
+      id: user.id,
+      email: user.email,
+      roles: [...new Set(roles)],
+      permissions: [...new Set(permissions)],
+    };
   }
 }

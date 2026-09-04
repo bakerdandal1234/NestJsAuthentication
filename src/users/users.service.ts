@@ -28,20 +28,34 @@ export class UsersService {
   }
 
   async findById(id: string): Promise<User> {
-    const user = await this.usersRepository.findOne({ where: { id } ,relations:{
-      userRoles:{
-        role:{
-          rolePermissions:{
-            permission:true
-          }
-        }
-      }
-    }});
+    const user = await this.usersRepository.findOne({ where: { id } });
     if (!user) {
       throw new NotFoundException('User not found');
     }
     return user;
   }
+  
+
+  async findByIdWithAuthorization(id: string): Promise<User> {
+  const user = await this.usersRepository.findOne({
+    where: { id },
+    relations: {
+      userRoles: {
+        role: {
+          rolePermissions: {
+            permission: true,
+          },
+        },
+      },
+    },
+  });
+
+  if (!user) {
+    throw new NotFoundException('User not found');
+  }
+
+  return user;
+}
 
   findByEmailVerificationToken(token: string): Promise<User | null> {
     return this.usersRepository.findOne({ where: { emailVerificationToken: token } });

@@ -93,7 +93,7 @@ export class AuthService {
     });
 
     await this.mailService.sendEmailVerification(user.email, emailVerificationToken);
-    await this.authorizationService.assignRoleByName(user.id, 'user');
+    await this.authorizationService.assignRoleByName(user.id,'user');
 
     return { message: 'Registration successful. Please check your email to verify your account.' };
   }
