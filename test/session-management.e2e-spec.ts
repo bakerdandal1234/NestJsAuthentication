@@ -448,4 +448,43 @@ describe('Session Management (e2e)', () => {
         .expect(401);
     }
   });
+
+  it('An expired session rejects refresh even if the JWT itself has not expired', async () => {
+    // 1. Register + verify a dedicated user for this test.
+    await request(app.getHttpServer())
+      .post('/v1/auth/register')
+      .send({ email: expirationTestEmail, password: testPassword })
+      .expect(201);
+
+    const user = await usersService.findByEmail(expirationTestEmail);
+    expect(user).not.toBeNull();
+    user!.isEmailVerified = true;
+    await usersService.save(user!);
+
+    // 2. Log in.
+    const loginRes = await request(app.getHttpServer())
+      .post('/v1/auth/login')
+      .send({ email: expirationTestEmail, password: testPassword })
+      .expect(200);
+
+    const refreshToken = loginRes.body.refreshToken;
+
+    const sessions = await sessionService.getUserSessions(user!.id);
+    expect(sessions).toHaveLength(1);
+    const sessionId = sessions[0].id;
+
+    // 3. Force this session's expiresAt into the past, directly in the DB.
+    // JWT_REFRESH_EXPIRES_IN is days-long, so we can't wait for the real
+    // JWT to expire in a test — this simulates it without waiting, and
+    // proves Session.expiresAt is enforced as its own, independent check
+    // (not just relying on the JWT's built-in exp claim).
+    await sessionRepository.update({ id: sessionId }, { expiresAt: new Date(Date.now() - 60_000) });
+
+    // 4. The JWT itself is still validly signed and unexpired, but the
+    // refresh must be rejected purely because the session has expired.
+    await request(app.getHttpServer())
+      .post('/v1/auth/refresh')
+      .send({ refreshToken })
+      .expect(401);
+  });
 });

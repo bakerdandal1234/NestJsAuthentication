@@ -10,7 +10,6 @@ import { UsersModule } from './users/users.module';
 import { MailModule } from './mail/mail.module';
 import { SessionsModule } from './sessions/sessions.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
-import { RolesGuard } from './common/guards/roles.guard';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -49,7 +48,6 @@ import { PermissionsGuard } from './common/guards/permissions.guard';
     // Global JWT auth: every route requires a valid token unless @Public().
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     // Global RBAC: enforces @Roles(...) where present.
-    { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
     // Normalizes all error responses.
     { provide: APP_FILTER, useClass: HttpExceptionFilter },

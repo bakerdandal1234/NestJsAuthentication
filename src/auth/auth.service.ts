@@ -146,9 +146,9 @@ export class AuthService {
       throw genericError();
     }
 
-    if (!user.isEmailVerified) {
-      throw new ForbiddenException('Please verify your email address before logging in');
-    }
+    // if (!user.isEmailVerified) {
+    //   throw new ForbiddenException('Please verify your email address before logging in');
+    // }
 
     if (user.isTwoFactorEnabled) {
       if (!twoFactorCode) {

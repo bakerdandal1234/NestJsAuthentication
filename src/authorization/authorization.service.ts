@@ -85,6 +85,20 @@ export class AuthorizationService {
     return role;
   }
 
+  async findUsersByRole(roleId: string): Promise<{ id: string; email: string }[]> {
+    await this.findRoleById(roleId); // throws NotFoundException if the role doesn't exist
+
+    const userRoles = await this.userRoleRepository.find({
+      where: { roleId },
+      relations: { user: true },
+    });
+
+    return userRoles.map((userRole) => ({
+      id: userRole.user.id,
+      email: userRole.user.email,
+    }));
+  }
+
   async updateRole(
     id: string,
     dto: UpdateRoleDto,
@@ -384,5 +398,13 @@ export class AuthorizationService {
     }
 
     return user;
+  }
+
+  async findAllUsers(): Promise<User[]> {
+    return this.userRepository.find({
+      order: {
+        email: 'ASC',
+      },
+    });
   }
 }

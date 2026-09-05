@@ -1,8 +1,7 @@
 import { Controller, Get } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { Roles } from '../common/decorators/roles.decorator';
-import { Role } from '../common/enums/role.enum';
+import { Permissions } from '../common/decorators/permissions.decorator';
 
 @Controller('users')
 export class UsersController {
@@ -14,7 +13,7 @@ export class UsersController {
   }
 
   // Example RBAC-protected route: only ADMIN role may access.
-  @Roles(Role.ADMIN)
+  @Permissions('admin:ping')
   @Get('admin/ping')
   adminPing() {
     return { message: 'You are an admin. Access granted.' };

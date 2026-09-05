@@ -1,0 +1,106 @@
+import { MigrationInterface, QueryRunner } from "typeorm";
+
+/**
+ * Seeds the RBAC tables added by AddAuthorization1788520019385, which
+ * created empty "roles"/"permissions"/"role_permissions" tables with no
+ * default rows. Without this seed:
+ *  - Registration is broken: AuthService.register() calls
+ *    authorizationService.assignRoleByName(user.id, 'user'), which throws
+ *    NotFoundException because no role named "user" exists yet.
+ *  - There is a bootstrap deadlock: creating roles/permissions via the API
+ *    requires 'roles:create' permission, but no user can hold any
+ *    permission until roles/permissions already exist.
+ *
+ * This migration also adds a missing UNIQUE constraint on
+ * permissions(resource, action) — AuthorizationService.createPermission()
+ * already checks for an existing (action, resource) pair before inserting,
+ * but without a DB-level constraint two concurrent requests could still
+ * race past that check and create duplicate permissions.
+ */
+export class SeedAuthorizationDefaults1788600000000 implements MigrationInterface {
+    name = 'SeedAuthorizationDefaults1788600000000'
+
+    public async up(queryRunner: QueryRunner): Promise<void> {
+        // --- Data integrity fix: enforce uniqueness at the DB level too ---
+        await queryRunner.query(`ALTER TABLE "permissions" ADD CONSTRAINT "UQ_permissions_resource_action" UNIQUE ("resource", "action")`);
+
+        // --- Default roles ---
+        // Names are lower-case/trimmed to match RolesGuard's normalized
+        // comparison and CreateRoleDto/UpdateRoleDto's @Transform.
+        await queryRunner.query(`
+            INSERT INTO "roles" ("name", "description") VALUES
+                ('user', 'Default role assigned to every registered user'),
+                ('moderator', 'Elevated role with limited administrative (read-only) access'),
+                ('admin', 'Full administrative access')
+            ON CONFLICT ("name") DO NOTHING
+        `);
+
+        // --- Default permissions ---
+        // One row per @Permissions('resource:action') check used across
+        // AuthorizationController today.
+        await queryRunner.query(`
+            INSERT INTO "permissions" ("action", "resource", "description") VALUES
+                ('read', 'roles', 'View roles'),
+                ('create', 'roles', 'Create roles'),
+                ('update', 'roles', 'Update roles'),
+                ('delete', 'roles', 'Delete roles'),
+                ('assign-permission', 'roles', 'Assign or remove a permission on a role'),
+                ('read', 'permissions', 'View permissions'),
+                ('create', 'permissions', 'Create permissions'),
+                ('update', 'permissions', 'Update permissions'),
+                ('delete', 'permissions', 'Delete permissions'),
+                ('read', 'users', 'View a user''s roles/permissions'),
+                ('assign-role', 'users', 'Assign or remove a role on a user')
+            ON CONFLICT ("resource", "action") DO NOTHING
+        `);
+
+        // --- admin: gets every permission that exists ---
+        await queryRunner.query(`
+            INSERT INTO "role_permissions" ("role_id", "permission_id")
+            SELECT r.id, p.id
+            FROM "roles" r
+            CROSS JOIN "permissions" p
+            WHERE r.name = 'admin'
+            ON CONFLICT ("role_id", "permission_id") DO NOTHING
+        `);
+
+        // --- moderator: read-only across roles/permissions/users ---
+        await queryRunner.query(`
+            INSERT INTO "role_permissions" ("role_id", "permission_id")
+            SELECT r.id, p.id
+            FROM "roles" r
+            JOIN "permissions" p ON p.resource IN ('roles', 'permissions', 'users') AND p.action = 'read'
+            WHERE r.name = 'moderator'
+            ON CONFLICT ("role_id", "permission_id") DO NOTHING
+        `);
+
+        // --- Bootstrap note ---
+        // 'user' intentionally gets no permissions here. To create your
+        // first admin account after running this migration, either:
+        //   1) Register normally (gets the 'user' role automatically), then
+        //      manually insert a matching user_roles row pointing at the
+        //      'admin' role's id, or
+        //   2) Run: INSERT INTO user_roles (user_id, role_id)
+        //      SELECT '<your-user-id>', id FROM roles WHERE name = 'admin';
+    }
+
+    public async down(queryRunner: QueryRunner): Promise<void> {
+        await queryRunner.query(`
+            DELETE FROM "role_permissions"
+            WHERE role_id IN (SELECT id FROM "roles" WHERE name IN ('user', 'moderator', 'admin'))
+        `);
+        await queryRunner.query(`
+            DELETE FROM "permissions"
+            WHERE (resource, action) IN (
+                ('roles', 'read'), ('roles', 'create'), ('roles', 'update'), ('roles', 'delete'),
+                ('roles', 'assign-permission'),
+                ('permissions', 'read'), ('permissions', 'create'), ('permissions', 'update'), ('permissions', 'delete'),
+                ('users', 'read'), ('users', 'assign-role')
+            )
+        `);
+        await queryRunner.query(`
+            DELETE FROM "roles" WHERE name IN ('user', 'moderator', 'admin')
+        `);
+        await queryRunner.query(`ALTER TABLE "permissions" DROP CONSTRAINT "UQ_permissions_resource_action"`);
+    }
+}

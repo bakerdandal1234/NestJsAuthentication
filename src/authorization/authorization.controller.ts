@@ -44,6 +44,12 @@ export class AuthorizationController {
     return this.authorizationService.findRoleById(id);
   }
 
+  @Get('roles/:id/users')
+  @Permissions('roles:read')
+  findUsersByRole(@Param('id') id: string) {
+    return this.authorizationService.findUsersByRole(id);
+  }
+
   @Patch('roles/:id')
   @Permissions('roles:update')
   updateRole(
@@ -178,5 +184,17 @@ export class AuthorizationController {
     return this.authorizationService.getUserAuthorization(
       userId,
     );
+  }
+
+  // ============================================================
+  // GET ALL USERS (for admin dashboard)
+  // ============================================================
+
+
+
+   @Get('users')
+  @Permissions('roles:read')
+  findAllUsers() {
+    return this.authorizationService.findAllUsers();
   }
 }
