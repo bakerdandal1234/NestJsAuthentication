@@ -21,15 +21,30 @@ export class User {
   @Column()
   email: string;
 
-  @Column()
+  // Nullable: OAuth-only accounts (Google/GitHub) never set a local
+  // password. Password-based login explicitly checks for this (see
+  // AuthService.login()) before ever calling bcrypt.compare().
+  @Column({ nullable: true })
   @Exclude({ toPlainOnly: true })
-  password: string;
+  password?: string;
 
   @Column({ nullable: true })
   firstName?: string;
 
   @Column({ nullable: true })
   lastName?: string;
+
+  // --- OAuth (Google / GitHub) ---
+  // Nullable + unique: at most one local account per provider id, but any
+  // number of accounts may have no linked provider at all (Postgres unique
+  // indexes treat multiple NULLs as distinct, so this is safe).
+  @Index({ unique: true })
+  @Column({ nullable: true })
+  googleId?: string;
+
+  @Index({ unique: true })
+  @Column({ nullable: true })
+  githubId?: string;
 
   @OneToMany(() => UserRole, (userRole) => userRole.user, {
     cascade: true,

@@ -1,8 +1,8 @@
-import { Module } from '@nestjs/common';
+import { ClassSerializerInterceptor, Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
-import { APP_GUARD, APP_FILTER } from '@nestjs/core';
+import { APP_GUARD, APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
 import typeormConfig from './config/typeorm.config';
 import { validate } from './config/env.validation';
 import { AuthModule } from './auth/auth.module';
@@ -51,6 +51,12 @@ import { PermissionsGuard } from './common/guards/permissions.guard';
     { provide: APP_GUARD, useClass: PermissionsGuard },
     // Normalizes all error responses.
     { provide: APP_FILTER, useClass: HttpExceptionFilter },
+    // Global response serialization: makes every @Exclude() decorator on
+    // entities (see User) actually take effect on every route that returns
+    // an entity instance (or array of them), stripping fields like the
+    // password hash, 2FA secret, and verification/reset tokens before they
+    // ever reach the client. Without this, @Exclude() alone does nothing.
+    { provide: APP_INTERCEPTOR, useClass: ClassSerializerInterceptor },
   ],
 })
 export class AppModule {}

@@ -27,6 +27,36 @@ export class UsersService {
     return this.usersRepository.findOne({ where: { email } });
   }
 
+  findByGoogleId(googleId: string): Promise<User | null> {
+    return this.usersRepository.findOne({ where: { googleId } });
+  }
+
+  findByGithubId(githubId: string): Promise<User | null> {
+    return this.usersRepository.findOne({ where: { githubId } });
+  }
+
+  /**
+   * Creates a brand-new OAuth-only user (no local password). Kept separate
+   * from create() rather than widening it, since create() intentionally
+   * requires the full CreateUserDto (password + validation) used by
+   * /auth/register — OAuth signups never go through that DTO.
+   */
+  async createOAuthUser(data: {
+    email: string;
+    firstName?: string;
+    lastName?: string;
+    isEmailVerified: boolean;
+    googleId?: string;
+    githubId?: string;
+  }): Promise<User> {
+    const existing = await this.findByEmail(data.email);
+    if (existing) {
+      throw new ConflictException('An account with this email already exists');
+    }
+    const user = this.usersRepository.create(data);
+    return this.usersRepository.save(user);
+  }
+
   async findById(id: string): Promise<User> {
     const user = await this.usersRepository.findOne({ where: { id } });
     if (!user) {
