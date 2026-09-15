@@ -17,6 +17,8 @@ import { AuthorizationModule } from './authorization/authorization.module';
 import { PermissionsGuard } from './common/guards/permissions.guard';
 import { CategoriesModule } from './categories/categories.module';
 import { ProductsModule } from './products/products.module';
+import { CustomersModule } from './customers/customers.module';
+import { InventoryModule } from './inventory/inventory.module';
 
 @Module({
   imports: [
@@ -43,6 +45,8 @@ import { ProductsModule } from './products/products.module';
     AuthorizationModule,
     CategoriesModule,
     ProductsModule,
+    CustomersModule,
+    InventoryModule,
   ],
   controllers: [AppController],
   providers: [

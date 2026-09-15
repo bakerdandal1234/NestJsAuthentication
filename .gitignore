@@ -54,8 +54,8 @@ pids
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
-src/migrations/1789411488859-CreateProductsTable.ts
-src/products
-src/categories
-src/common/transformers
-src/common/validators
+# src/migrations/1789411488859-CreateProductsTable.ts
+# src/products
+# src/categories
+# src/common/transformers
+# src/common/validators

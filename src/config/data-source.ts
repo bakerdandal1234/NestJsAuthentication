@@ -9,6 +9,8 @@ import { UserRole } from '../users/entities/user-role.entity';
 import { RolePermission } from '../users/entities/role-permission.entity';
 import { Category } from '../categories/entities/category.entity';
 import { Product } from '../products/entities/product.entity';
+import { Customer } from '../customers/entities/customer.entity';
+import { Inventory } from '../inventory/entities/inventory.entity';
 /**
  * Standalone DataSource for the TypeORM CLI (migration:generate / migration:run).
  * This is separate from typeorm.config.ts (which NestJS uses at runtime via
@@ -23,7 +25,7 @@ export const AppDataSource = new DataSource({
   username: process.env.DB_USERNAME,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  entities: [User, LoginHistory, Session,Role,Permission,UserRole,RolePermission,Category,Product],
+  entities: [User, LoginHistory, Session,Role,Permission,UserRole,RolePermission,Category,Product,Customer,Inventory],
   migrations: ['src/migrations/*.ts'],
   synchronize: false,
   logging: true,

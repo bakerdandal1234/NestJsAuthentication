@@ -47,10 +47,14 @@ const DEFAULT_PERMISSIONS = [
   { resource: 'products', action: 'read', description: 'View products' },
   { resource: 'products', action: 'create', description: 'Create products' },
   { resource: 'products', action: 'update', description: 'Update products (including activate/deactivate)' },
+  { resource: 'customers', action: 'read', description: 'View customers' },
+  { resource: 'customers', action: 'create', description: 'Create customers' },
+  { resource: 'customers', action: 'update', description: 'Update customers' },
+  { resource: 'customers', action: 'delete', description: 'Delete customers' },
 ];
 
 // Read-only resources that the 'moderator' role gets automatically.
-const MODERATOR_READ_RESOURCES = new Set(['roles', 'permissions', 'users', 'categories', 'products']);
+const MODERATOR_READ_RESOURCES = new Set(['roles', 'permissions', 'users', 'categories', 'products', 'customers']);
 
 async function seed() {
   const app = await NestFactory.createApplicationContext(AppModule, {
