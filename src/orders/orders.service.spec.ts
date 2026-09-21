@@ -2,7 +2,7 @@
 import { NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { BadRequestException } from '@nestjs/common';
 import { OrdersService } from './OrdersService.service';
 import { Order } from './entity/Order.entity';
@@ -18,8 +18,22 @@ describe('OrdersService', () => {
   let orderItemRepository: jest.Mocked<Repository<OrderItem>>;
   let customerRepository: jest.Mocked<Repository<Customer>>;
   let productRepository: jest.Mocked<Repository<Product>>;
+  // create() now runs the order + its items through a single transactional
+  // EntityManager instead of the two injected repositories directly, so
+  // that a failure while saving the items rolls back the order row too.
+  // `manager` stands in for that EntityManager in tests.
+  let manager: { create: jest.Mock; save: jest.Mock };
+  let dataSource: { transaction: jest.Mock };
 
   beforeEach(async () => {
+    manager = {
+      create: jest.fn((_entity: any, data: any) => data),
+      save: jest.fn(async (a: any, b?: any) => (b !== undefined ? b : a)),
+    };
+    dataSource = {
+      transaction: jest.fn((work: any) => work(manager)),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         OrdersService,
@@ -52,6 +66,10 @@ describe('OrdersService', () => {
             find: jest.fn(),
           },
         },
+        {
+          provide: DataSource,
+          useValue: dataSource,
+        },
       ],
     }).compile();
 
@@ -68,7 +86,7 @@ describe('OrdersService', () => {
   });
 
   describe('create', () => {
-    it('should create an order using the current product price', async () => {
+    it('should create an order using the current product price, atomically', async () => {
       const customer = {
         id: 'customer-1',
       } as Customer;
@@ -85,12 +103,6 @@ describe('OrdersService', () => {
     categoryId: 'cat-1',
   },
 ] as unknown as Product[];
-      const order = {
-        id: 'order-1',
-        customerId: 'customer-1',
-        subtotal: '20.00',
-        totalAmount: '20.00',
-      } as Order;
 
       const orderItems = [
         {
@@ -104,21 +116,20 @@ describe('OrdersService', () => {
       ] as OrderItem[];
 
       customerRepository.findOne.mockResolvedValue(customer);
-
       productRepository.find.mockResolvedValue(products);
 
-      orderRepository.create.mockReturnValue(order);
-
-      orderRepository.save.mockResolvedValue(order);
-
-      orderItemRepository.create.mockReturnValue(orderItems[0]);
-
-      orderItemRepository.save = jest.fn().mockResolvedValue(orderItems);
+      // manager.save() is called first for the order (single-arg) and then
+      // for the items (two-arg); return a stable order id for the first call.
+      manager.save.mockImplementationOnce(async (order: any) => ({ ...order, id: 'order-1' }));
+      manager.save.mockImplementationOnce(async (_entity: any, items: any) => items);
 
       jest.spyOn(service, 'findById').mockResolvedValue({
-        ...order,
+        id: 'order-1',
+        customerId: 'customer-1',
+        subtotal: '20.00',
+        totalAmount: '20.00',
         items: orderItems,
-      });
+      } as Order);
 
       const result = await service.create({
         customerId: 'customer-1',
@@ -131,30 +142,75 @@ describe('OrdersService', () => {
       });
 
       expect(customerRepository.findOne).toHaveBeenCalled();
-
       expect(productRepository.find).toHaveBeenCalled();
 
-      expect(orderRepository.create).toHaveBeenCalledWith(
+      // Both the order and its items are created/saved through the SAME
+      // transactional manager, not the plain injected repositories.
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(manager.create).toHaveBeenCalledWith(
+        Order,
         expect.objectContaining({
           customerId: 'customer-1',
           subtotal: '20.00',
           totalAmount: '20.00',
         }),
       );
-
-      expect(orderItemRepository.create).toHaveBeenCalledWith(
+      expect(manager.create).toHaveBeenCalledWith(
+        OrderItem,
         expect.objectContaining({
+          orderId: 'order-1',
           productId: 'prod-1',
           quantity: 2,
           unitPrice: '10.00',
           subtotal: '20.00',
         }),
       );
+      expect(manager.save).toHaveBeenCalledTimes(2);
 
-      expect(result).toEqual({
-        ...order,
-        items: orderItems,
+      // The repositories injected at the class level are never touched by
+      // create() anymore — only the transactional manager is.
+      expect(orderRepository.create).not.toHaveBeenCalled();
+      expect(orderRepository.save).not.toHaveBeenCalled();
+      expect(orderItemRepository.create).not.toHaveBeenCalled();
+      expect(orderItemRepository.save).not.toHaveBeenCalled();
+
+      expect(result.id).toBe('order-1');
+      expect(result.items).toEqual(orderItems);
+    });
+
+    it('should roll back and never call findById if saving the items fails', async () => {
+      const customer = { id: 'customer-1' } as Customer;
+      const products = [
+        {
+          id: 'prod-1',
+          name: 'Test Product',
+          price: '10.00',
+          status: ProductStatus.ACTIVE,
+        },
+      ] as unknown as Product[];
+
+      customerRepository.findOne.mockResolvedValue(customer);
+      productRepository.find.mockResolvedValue(products);
+
+      manager.save.mockImplementationOnce(async (order: any) => ({ ...order, id: 'order-1' }));
+      manager.save.mockImplementationOnce(async () => {
+        throw new Error('DB connection dropped while saving items');
       });
+
+      const findByIdSpy = jest.spyOn(service, 'findById');
+
+      await expect(
+        service.create({
+          customerId: 'customer-1',
+          items: [{ productId: 'prod-1', quantity: 2 }],
+        }),
+      ).rejects.toThrow('DB connection dropped while saving items');
+
+      // The whole thing ran inside one transaction() call, so the failed
+      // item save means the order was never actually committed either —
+      // there is nothing to look up afterward.
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(findByIdSpy).not.toHaveBeenCalled();
     });
 
     it('should throw NotFoundException when a product does not exist', async () => {
@@ -180,8 +236,7 @@ await expect(
 ).rejects.toThrow(NotFoundException);
 
 
-expect(orderRepository.create).not.toHaveBeenCalled();
-expect(orderRepository.save).not.toHaveBeenCalled();
+expect(dataSource.transaction).not.toHaveBeenCalled();
 });
 
 it('should throw NotFoundException when customer does not exist', async () => {
@@ -200,8 +255,7 @@ it('should throw NotFoundException when customer does not exist', async () => {
   ).rejects.toThrow(NotFoundException);
 
   expect(productRepository.find).not.toHaveBeenCalled();
-  expect(orderRepository.create).not.toHaveBeenCalled();
-  expect(orderRepository.save).not.toHaveBeenCalled();
+  expect(dataSource.transaction).not.toHaveBeenCalled();
 });
 
 
@@ -237,10 +291,7 @@ it('should throw BadRequestException when product is inactive', async () => {
     }),
   ).rejects.toThrow(BadRequestException);
 
-  expect(orderRepository.create).not.toHaveBeenCalled();
-  expect(orderRepository.save).not.toHaveBeenCalled();
-  expect(orderItemRepository.create).not.toHaveBeenCalled();
-  expect(orderItemRepository.save).not.toHaveBeenCalled();
+  expect(dataSource.transaction).not.toHaveBeenCalled();
 });
 it('should throw BadRequestException when the same product is added twice', async () => {
   const customer = {
@@ -266,10 +317,7 @@ it('should throw BadRequestException when the same product is added twice', asyn
   ).rejects.toThrow(BadRequestException);
 
   expect(productRepository.find).not.toHaveBeenCalled();
-  expect(orderRepository.create).not.toHaveBeenCalled();
-  expect(orderRepository.save).not.toHaveBeenCalled();
-  expect(orderItemRepository.create).not.toHaveBeenCalled();
-  expect(orderItemRepository.save).not.toHaveBeenCalled();
+  expect(dataSource.transaction).not.toHaveBeenCalled();
 });
 
 it('should snapshot the product price in the order item', async () => {
@@ -287,30 +335,23 @@ it('should snapshot the product price in the order item', async () => {
   customerRepository.findOne.mockResolvedValue(customer);
   productRepository.find.mockResolvedValue([product]);
 
-  const order = {
-    id: 'order-1',
-    status: OrderStatus.PENDING,
-  } as Order;
-
-  orderRepository.create.mockReturnValue(order);
-  orderRepository.save.mockResolvedValue(order);
-
-  const orderItem = {
-    id: 'item-1',
-    orderId: 'order-1',
-    productId: 'prod-1',
-    quantity: 2,
-    unitPrice: '10.00',
-    subtotal: '20.00',
-  } as OrderItem;
-
-  orderItemRepository.create.mockReturnValue(orderItem);
-  orderItemRepository.save = jest.fn().mockResolvedValue([orderItem]);
+  manager.save.mockImplementationOnce(async (order: any) => ({ ...order, id: 'order-1' }));
+  manager.save.mockImplementationOnce(async (_entity: any, items: any) => items);
 
   jest.spyOn(service, 'findById').mockResolvedValue({
-    ...order,
-    items: [orderItem],
-  });
+    id: 'order-1',
+    status: OrderStatus.PENDING,
+    items: [
+      {
+        id: 'item-1',
+        orderId: 'order-1',
+        productId: 'prod-1',
+        quantity: 2,
+        unitPrice: '10.00',
+        subtotal: '20.00',
+      },
+    ],
+  } as Order);
 
   await service.create({
     customerId: 'customer-1',
@@ -318,7 +359,8 @@ it('should snapshot the product price in the order item', async () => {
   });
 
   // Product price is 10.00 at creation time
-  expect(orderItemRepository.create).toHaveBeenCalledWith(
+  expect(manager.create).toHaveBeenCalledWith(
+    OrderItem,
     expect.objectContaining({
       unitPrice: '10.00',
       subtotal: '20.00',
@@ -423,8 +465,7 @@ it('should reject an order with no items', async () => {
   ).rejects.toThrow(BadRequestException);
 
   expect(customerRepository.findOne).not.toHaveBeenCalled();
-  expect(orderRepository.create).not.toHaveBeenCalled();
-  expect(orderRepository.save).not.toHaveBeenCalled();
+  expect(dataSource.transaction).not.toHaveBeenCalled();
 });
 
   it.each([
@@ -437,4 +478,3 @@ it('should reject an order with no items', async () => {
     expect(orderRepository.save).not.toHaveBeenCalled();
   });
 });
-

@@ -20,6 +20,7 @@ import { Refund } from '../payments/entity/refund.entity';
 import { StripeWebhookEvent } from '../payments/entity/stripe-webhook-event.entity';   
 import { CustomerAccount } from '../customer-auth/entities/customer-account.entity';
 import { CustomerSession } from '../customer-auth/entities/customer-session.entity';
+import { CustomerOAuthChallenge } from '../customer-auth/entities/customer-oauth-challenge.entity';
 import { CustomerLoginHistory } from '../customer-auth/entities/customer-login-history.entity';
 /**
  * Standalone DataSource for the TypeORM CLI (migration:generate / migration:run).
@@ -35,7 +36,7 @@ export const AppDataSource = new DataSource({
   username: process.env.DB_USERNAME,    
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  entities: [StaffOAuthChallenge,User, LoginHistory, Session,Role,Permission,UserRole,RolePermission,Category,Product,Customer,Inventory,InventoryTransaction,Order,OrderItem,Payment,Refund,StripeWebhookEvent,CustomerAccount,CustomerSession,CustomerLoginHistory ],
+  entities: [StaffOAuthChallenge,User, LoginHistory, Session,Role,Permission,UserRole,RolePermission,Category,Product,Customer,Inventory,InventoryTransaction,Order,OrderItem,Payment,Refund,StripeWebhookEvent,CustomerAccount,CustomerSession,CustomerOAuthChallenge,CustomerLoginHistory ],
   migrations: ['src/migrations/*.ts'],
   synchronize: false,
   logging: true,

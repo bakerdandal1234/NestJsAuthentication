@@ -3,10 +3,6 @@ import { DataSource, EntityManager, Repository } from 'typeorm';
 
 import { CustomerLoginHistory } from './entities/customer-login-history.entity';
 import { CustomerSession } from './entities/customer-session.entity';
-import {
-  CUSTOMER_PENDING_2FA_PREFIX,
-  CUSTOMER_PENDING_EXCHANGE_PREFIX,
-} from './customer-auth.constants';
 
 export interface CustomerRequestContext {
   ipAddress?: string;
@@ -50,7 +46,7 @@ export class CustomerSessionsService {
 
   /**
    * Creates the "pending" row a login starts as: an id, an owner, and a
-   * placeholder hash that is NOT a refresh token (see the pending prefixes).
+   * placeholder hash that is NOT a refresh token (the OAuth exchange marker).
    * No access or refresh token exists at this point.
    */
   createPending(
@@ -74,6 +70,31 @@ export class CustomerSessionsService {
     );
   }
 
+  /**
+   * Inserts a brand-new authenticated session only after 2FA succeeds.
+   * The supplied manager binds this insert, the success audit record and
+   * challenge consumption to a single commit. Only a refresh digest is
+   * stored here; code/binding placeholders still use createPending().
+   */
+  async createSession(
+    manager: EntityManager,
+    sessionId: string,
+    accountId: string,
+    refreshTokenHash: string,
+    expiresAt: Date,
+    context: CustomerRequestContext,
+  ): Promise<void> {
+    await this.repository(manager).insert({
+      id: sessionId,
+      customerAccountId: accountId,
+      refreshTokenHash,
+      expiresAt,
+      lastUsedAt: new Date(),
+      ipAddress: context.ipAddress,
+      userAgent: context.userAgent,
+    });
+  }
+
   /** Row-level lock so two concurrent redemptions can never both succeed. */
   lockById(
     manager: EntityManager,
@@ -86,9 +107,8 @@ export class CustomerSessionsService {
   }
 
   /**
-   * Swaps the stored hash. This single operation is what consumes a code,
-   * consumes a challenge, and rotates a refresh token — the old value stops
-   * matching the moment it is replaced, which is what "single use" means
+   * Swaps the stored hash to redeem a code without 2FA or rotate a refresh
+   * token. The old value stops matching the moment it is replaced, which is what "single use" means
    * here. `expiresAt` is only passed when the session's lifetime genuinely
    * changes (never on plain rotation, so a session keeps an absolute expiry).
    */
@@ -123,9 +143,9 @@ export class CustomerSessionsService {
   }
 
   /**
-   * Active, fully-established sessions for one account. Pending rows (an
-   * unredeemed code, an unfinished 2FA challenge) are excluded: they are not
-   * devices the customer is logged in on.
+   * Active, fully-established sessions for one account. Only refresh-token
+   * digests qualify, so unredeemed exchange rows and any legacy pending
+   * markers remain hidden. New 2FA challenges live in their own table.
    */
   async listActive(
     accountId: string,
@@ -136,11 +156,8 @@ export class CustomerSessionsService {
       .where('session.customerAccountId = :accountId', { accountId })
       .andWhere('session.revokedAt IS NULL')
       .andWhere('session.expiresAt > :now', { now: new Date() })
-      .andWhere('session.refreshTokenHash NOT LIKE :pendingExchange', {
-        pendingExchange: `${CUSTOMER_PENDING_EXCHANGE_PREFIX}%`,
-      })
-      .andWhere('session.refreshTokenHash NOT LIKE :pending2fa', {
-        pending2fa: `${CUSTOMER_PENDING_2FA_PREFIX}%`,
+      .andWhere('session.refreshTokenHash ~ :refreshHashPattern', {
+        refreshHashPattern: '^[0-9a-f]{64}$',
       })
       .orderBy('session.createdAt', 'DESC')
       .getMany();

@@ -2,11 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
-import {
-  BadRequestException,
-  ConflictException,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 
 import { PaymentsService } from './payments.service';
 import {
@@ -18,11 +14,13 @@ import {
 import { Order, OrderStatus } from '../orders/entity/Order.entity';
 
 const mockPaymentIntentsCreate = jest.fn();
+const mockPaymentIntentsRetrieve = jest.fn();
 
 jest.mock('stripe', () => {
   return jest.fn().mockImplementation(() => ({
     paymentIntents: {
       create: mockPaymentIntentsCreate,
+      retrieve: mockPaymentIntentsRetrieve,
     },
   }));
 });
@@ -34,6 +32,7 @@ describe('PaymentsService', () => {
 
   beforeEach(async () => {
     mockPaymentIntentsCreate.mockReset();
+    mockPaymentIntentsRetrieve.mockReset();
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -174,24 +173,97 @@ describe('PaymentsService', () => {
     expect(mockPaymentIntentsCreate).not.toHaveBeenCalled();
   });
 
-  it('should reject a duplicate idempotency key', async () => {
-    const existingPayment = {
-      id: 'payment-1',
-      idempotencyKey: 'key-1',
-    } as Payment;
+  describe('resuming an existing idempotencyKey instead of rejecting it', () => {
+    it('returns the existing payment as-is when it already succeeded', async () => {
+      const existingPayment = {
+        id: 'payment-1',
+        idempotencyKey: 'key-1',
+        status: PaymentStatus.SUCCESS,
+        providerTransactionId: 'pi_test_123',
+      } as Payment;
 
-    paymentRepository.findOne.mockResolvedValue(existingPayment);
+      paymentRepository.findOne.mockResolvedValue(existingPayment);
 
-    await expect(
-      service.create({
+      const result = await service.create({
         orderId: 'order-1',
         idempotencyKey: 'key-1',
-      }),
-    ).rejects.toThrow(ConflictException);
+      });
 
-    expect(orderRepository.findOne).not.toHaveBeenCalled();
-    expect(paymentRepository.create).not.toHaveBeenCalled();
-    expect(paymentRepository.save).not.toHaveBeenCalled();
-    expect(mockPaymentIntentsCreate).not.toHaveBeenCalled();
+      expect(result).toBe(existingPayment);
+      expect(orderRepository.findOne).not.toHaveBeenCalled();
+      expect(paymentRepository.create).not.toHaveBeenCalled();
+      expect(paymentRepository.save).not.toHaveBeenCalled();
+      expect(mockPaymentIntentsCreate).not.toHaveBeenCalled();
+      expect(mockPaymentIntentsRetrieve).not.toHaveBeenCalled();
+    });
+
+    it('syncs the status from Stripe when a PaymentIntent id already exists', async () => {
+      const existingPayment = {
+        id: 'payment-1',
+        idempotencyKey: 'key-1',
+        status: PaymentStatus.PENDING,
+        providerTransactionId: 'pi_test_123',
+      } as Payment;
+
+      const settledPayment = { ...existingPayment, status: PaymentStatus.SUCCESS };
+
+      paymentRepository.findOne.mockResolvedValue(existingPayment);
+      mockPaymentIntentsRetrieve.mockResolvedValue({ status: 'succeeded' });
+      paymentRepository.update.mockResolvedValue({ affected: 1 } as never);
+      paymentRepository.findOneByOrFail.mockResolvedValue(settledPayment);
+
+      const result = await service.create({
+        orderId: 'order-1',
+        idempotencyKey: 'key-1',
+      });
+
+      expect(mockPaymentIntentsRetrieve).toHaveBeenCalledWith('pi_test_123');
+      expect(mockPaymentIntentsCreate).not.toHaveBeenCalled();
+      expect(paymentRepository.update).toHaveBeenCalledWith('payment-1', {
+        status: PaymentStatus.SUCCESS,
+        paidAt: expect.any(Date),
+      });
+      expect(result).toBe(settledPayment);
+    });
+
+    it('retries the Stripe call with the same idempotencyKey when no PaymentIntent id was ever recorded', async () => {
+      const existingPayment = {
+        id: 'payment-1',
+        orderId: 'order-1',
+        amount: '100.00',
+        idempotencyKey: 'key-1',
+        status: PaymentStatus.PENDING,
+        providerTransactionId: null,
+      } as Payment;
+
+      const resumedPayment = { ...existingPayment, providerTransactionId: 'pi_test_456' };
+
+      paymentRepository.findOne.mockResolvedValue(existingPayment);
+      mockPaymentIntentsCreate.mockResolvedValue({ id: 'pi_test_456' });
+      paymentRepository.update.mockResolvedValue({ affected: 1 } as never);
+      paymentRepository.findOneByOrFail.mockResolvedValue(resumedPayment);
+
+      const result = await service.create({
+        orderId: 'order-1',
+        idempotencyKey: 'key-1',
+      });
+
+      expect(mockPaymentIntentsRetrieve).not.toHaveBeenCalled();
+      expect(mockPaymentIntentsCreate).toHaveBeenCalledWith(
+        {
+          amount: 10000,
+          currency: 'usd',
+          metadata: {
+            flowdeskPaymentId: 'payment-1',
+            orderId: 'order-1',
+          },
+        },
+        { idempotencyKey: 'key-1' },
+      );
+      expect(paymentRepository.update).toHaveBeenCalledWith('payment-1', {
+        providerTransactionId: 'pi_test_456',
+      });
+      expect(result).toBe(resumedPayment);
+    });
   });
 });

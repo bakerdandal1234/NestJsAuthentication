@@ -77,6 +77,35 @@ export class SessionService {
     return this.sessionRepository.save(session);
   }
 
+  /**
+   * Atomically rotates the refresh token hash only if the row still holds
+   * `expectedHash` (and is not revoked/expired) at the moment of the
+   * UPDATE. This is a single-statement compare-and-swap: the database
+   * itself resolves the race, so two concurrent requests presenting the
+   * same not-yet-rotated token can never both succeed — only one UPDATE
+   * can match, the other affects 0 rows and gets `false` back. Requires
+   * refreshTokenHash to be a deterministic hash (see AuthService.
+   * hashRefreshToken()) since bcrypt's per-call random salt would never
+   * equality-match here.
+   */
+  async rotateRefreshTokenIfMatches(
+    sessionId: string,
+    expectedHash: string,
+    newHash: string,
+  ): Promise<boolean> {
+    const result = await this.sessionRepository
+      .createQueryBuilder()
+      .update(Session)
+      .set({ refreshTokenHash: newHash, lastUsedAt: new Date() })
+      .where('id = :sessionId', { sessionId })
+      .andWhere('"refreshTokenHash" = :expectedHash', { expectedHash })
+      .andWhere('"revokedAt" IS NULL')
+      .andWhere('"expiresAt" > :now', { now: new Date() })
+      .execute();
+
+    return (result.affected ?? 0) > 0;
+  }
+
   async revokeSession(sessionId: string): Promise<void> {
     await this.sessionRepository.update({ id: sessionId }, { revokedAt: new Date() });
   }

@@ -20,6 +20,7 @@ import { OrderItem } from '../orders/entity/order-item.entity';
 import { Order } from '../orders/entity/Order.entity';
 import { CustomerAccount } from '../customer-auth/entities/customer-account.entity';
 import { CustomerSession } from '../customer-auth/entities/customer-session.entity';
+import { CustomerOAuthChallenge } from '../customer-auth/entities/customer-oauth-challenge.entity';
 import { CustomerLoginHistory } from '../customer-auth/entities/customer-login-history.entity';
 export default registerAs('database', (): TypeOrmModuleOptions => ({
   type: 'postgres',
@@ -28,7 +29,7 @@ export default registerAs('database', (): TypeOrmModuleOptions => ({
   username: process.env.DB_USERNAME,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  entities: [StaffOAuthChallenge,User, LoginHistory, Session,Role,Permission,UserRole,RolePermission,Category,Product,Customer,Inventory,InventoryTransaction,Order,OrderItem,Payment,Refund,StripeWebhookEvent,CustomerAccount,CustomerSession,CustomerLoginHistory ],
+  entities: [StaffOAuthChallenge,User, LoginHistory, Session,Role,Permission,UserRole,RolePermission,Category,Product,Customer,Inventory,InventoryTransaction,Order,OrderItem,Payment,Refund,StripeWebhookEvent,CustomerAccount,CustomerSession,CustomerOAuthChallenge,CustomerLoginHistory ],
 
   // Fully migration-based now (both dev and production) — synchronize is
   // never used, to avoid drift between the schema TypeORM would infer from

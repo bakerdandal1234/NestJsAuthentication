@@ -9,6 +9,8 @@ export interface JwtPayload {
   sub: string;
   email: string;
   sid?: string;
+  /** Unique per token issuance (crypto.randomUUID()) — see AuthService.issueTokens(). */
+  jti?: string;
 }
 
 @Injectable()

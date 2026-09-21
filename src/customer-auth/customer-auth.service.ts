@@ -4,7 +4,8 @@ import {
     UnauthorizedException,
 } from '@nestjs/common';
 import { EntityManager } from 'typeorm';
-import * as speakeasy from 'speakeasy';
+import { randomUUID } from 'node:crypto';
+import { CustomerOAuthChallengeService } from './customer-oauth-challenge.service';
 import { CustomerTwoFactorService } from './customer-two-factor.service';
 import { CustomerAccountsService } from './customer-accounts.service';
 import { CustomerExchangeService } from './customer-exchange.service';
@@ -20,7 +21,6 @@ import type { CustomerGoogleProfile } from './interfaces/customer-google-profile
 import type { CustomerPrincipal } from './interfaces/customer-principal.interface';
 import {
     CUSTOMER_2FA_CHALLENGE_TTL_SECONDS,
-    CUSTOMER_PENDING_2FA_PREFIX,
     CUSTOMER_PENDING_EXCHANGE_PREFIX,
     CUSTOMER_REFRESH_TTL_SECONDS,
 } from './customer-auth.constants';
@@ -58,9 +58,9 @@ type CustomerRefreshOutcome =
     | { kind: 'reuse-detected'; sessionId: string };
 
 /**
- * Internal result of the 2FA transaction. A wrong code must be COUNTED, so
- * it cannot be thrown from inside the transaction that would roll that
- * counter back — see verifyTwoFactor().
+ * Internal result of the 2FA transaction. Account-level failed verification
+ * bookkeeping still runs after commit. The independent challenge attempt
+ * is already persisted before this transaction begins — see verifyTwoFactor().
  */
 type CustomerTwoFactorOutcome =
     | CustomerSessionIssued
@@ -73,7 +73,8 @@ type CustomerTwoFactorOutcome =
  * collaborator:
  *
  *   - CustomerAccountsService  -> resolving the Google identity to an account
- *   - CustomerExchangeService  -> the one-time code / 2FA challenge artifacts
+ *   - CustomerExchangeService  -> the one-time OAuth code / binding pair
+ *   - CustomerOAuthChallengeService -> the separate pending 2FA store
  *   - CustomerSessionsService  -> customer_sessions + customer_login_history
  *   - CustomerTokensService    -> JWT signing/verification + CSRF derivation
  *   - CustomerCookiesService   -> cookie transport (controller-side only)
@@ -89,6 +90,7 @@ export class CustomerAuthService {
         private readonly sessions: CustomerSessionsService,
         private readonly tokens: CustomerTokensService,
         private readonly twoFactor: CustomerTwoFactorService,
+        private readonly challenges: CustomerOAuthChallengeService,
     ) { }
 
     /**
@@ -128,7 +130,7 @@ export class CustomerAuthService {
      *
      * Redeeming is a locked read-modify-write, so React StrictMode's double
      * invocation (or any replay) cannot redeem the same code twice — the
-     * second attempt finds a hash that no longer matches.
+     * second attempt finds a replaced hash or a revoked exchange row.
      */
     async completeExchange(
         code: unknown,
@@ -176,18 +178,19 @@ export class CustomerAuthService {
                         );
                     }
 
-                    const challenge = this.exchange.issueChallenge(session.id);
-
-                    await this.sessions.replaceHash(
+                    // Commit challenge issuance and exchange consumption together.
+                    // This row remains a revoked exchange placeholder; it is
+                    // never promoted into the post-2FA authenticated session.
+                    const challenge = await this.challenges.create(
+                        account.id,
+                        account.twoFactorSecret,
                         manager,
-                        session,
-                        challenge.pendingHash,
-                        new Date(Date.now() + challenge.expiresIn * 1000),
                     );
+                    await this.sessions.revoke(session.id, manager);
 
                     return {
                         kind: 'two-factor',
-                        challenge: challenge.challenge,
+                        challenge,
                         expiresIn: CUSTOMER_2FA_CHALLENGE_TTL_SECONDS,
                     };
                 }
@@ -207,42 +210,24 @@ export class CustomerAuthService {
         code: string,
         context: CustomerRequestContext,
     ): Promise<CustomerSessionIssued> {
-        const parsed = this.exchange.parseChallenge(challenge);
-
-        if (!parsed) {
-            throw this.exchange.invalid();
-        }
-
-        const expectedHash = this.exchange.challengeHashFor(parsed.secret);
+        // Count before opening the verification transaction. A wrong code,
+        // account lockout or later rollback must not refund this attempt.
+        const pending = await this.challenges.attempt(challenge);
 
         const outcome = await this.sessions.runInTransaction(
             async (manager): Promise<CustomerTwoFactorOutcome> => {
-                const session = await this.sessions.lockById(
-                    manager,
-                    parsed.sessionId,
-                );
-
-                if (
-                    !session ||
-                    !session.refreshTokenHash.startsWith(
-                        CUSTOMER_PENDING_2FA_PREFIX,
-                    ) ||
-                    !this.exchange.matches(session.refreshTokenHash, expectedHash) ||
-                    !this.isUsable(session)
-                ) {
-                    return { kind: 'rejected' };
-                }
-
                 const account = await this.lockAccount(
                     manager,
-                    session.customerAccountId,
+                    pending.customerAccountId,
                 );
 
-                // Throws on a locked account: nothing has been written yet,
-                // so there is no state to lose to the rollback.
                 this.assertLoginAllowed(account);
 
-                if (!account.isTwoFactorEnabled || !account.twoFactorSecret) {
+                if (
+                    !account.isTwoFactorEnabled ||
+                    !account.twoFactorSecret ||
+                    this.challenges.fingerprint(account.twoFactorSecret) !== pending.secretFingerprint
+                ) {
                     return { kind: 'rejected' };
                 }
 
@@ -252,9 +237,9 @@ export class CustomerAuthService {
                 );
 
                 if (!valid) {
-                    // Counted AFTER this transaction commits — throwing here
-                    // would roll the attempt counter back and the lockout
-                    // would never accumulate. The challenge row is left
+                    // Account lockout is updated AFTER this transaction commits.
+                    // The dedicated challenge attempt was already counted before
+                    // this transaction and survives either outcome. The challenge row is left
                     // intact on purpose so a mistyped code can be retried
                     // until the lockout or the 5-minute expiry stops it.
                     return {
@@ -264,12 +249,16 @@ export class CustomerAuthService {
                     };
                 }
 
+                // Consume and create the new session in the same transaction.
+                // A concurrent verifier cannot mint a second session; a failed
+                // insert rolls consumption back so a fresh attempt can retry.
+                await this.challenges.consume(pending.tokenHash, manager);
                 await this.accountsService.clearVerificationLockout(
                     manager,
                     account.id,
                 );
 
-                return this.issueSession(manager, session, account, context, true);
+                return this.issueFreshSession(manager, account, context);
             },
         );
 
@@ -440,6 +429,35 @@ export class CustomerAuthService {
     // -------------------------------------------------------------------
 
     /**
+     * A verified second factor starts a fresh device session, with a new id
+     * and context from this request. No exchange placeholder is reused and
+     * no temporary challenge value ever enters refreshTokenHash.
+     */
+    private async issueFreshSession(
+        manager: EntityManager,
+        account: CustomerAccount,
+        context: CustomerRequestContext,
+    ): Promise<CustomerSessionIssued> {
+        const sessionId = randomUUID();
+        const [accessToken, refreshToken] = await Promise.all([
+            this.tokens.signAccessToken(account.id, sessionId),
+            this.tokens.signRefreshToken(account.id, sessionId),
+        ]);
+
+        await this.sessions.createSession(
+            manager,
+            sessionId,
+            account.id,
+            this.tokens.hashRefreshToken(refreshToken),
+            new Date(Date.now() + CUSTOMER_REFRESH_TTL_SECONDS * 1000),
+            context,
+        );
+        await this.sessions.recordLogin(account.id, true, context, undefined, manager);
+
+        return { kind: 'session', accessToken, refreshToken, sessionId };
+    }
+
+    /**
      * Turns a pending or rotating row into a live session: signs the token
      * pair and stores only the refresh token's digest.
      */
@@ -503,12 +521,13 @@ export class CustomerAuthService {
         return !session.revokedAt && session.expiresAt.getTime() > Date.now();
     }
 
-    /** Pending rows hold a marker, never a refresh token digest. */
+    /**
+     * Only SHA-256 refresh digests represent established sessions. The
+     * allowlist also rejects legacy pending markers during deployment,
+     * without retaining the removed challenge-storage format.
+     */
     private isPending(session: CustomerSession): boolean {
-        return (
-            session.refreshTokenHash.startsWith(CUSTOMER_PENDING_EXCHANGE_PREFIX) ||
-            session.refreshTokenHash.startsWith(CUSTOMER_PENDING_2FA_PREFIX)
-        );
+        return !/^[0-9a-f]{64}$/.test(session.refreshTokenHash);
     }
 
     /**

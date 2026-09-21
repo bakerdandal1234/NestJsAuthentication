@@ -392,3 +392,68 @@ For the optional local PostgreSQL integration tests, set `RUN_PAYMENT_DB_TESTS=1
 and run Jest with `--runInBand --runTestsByPath src/payments/stripe-webhook.integration.spec.ts`.
 These tests create and clean up only their own fixtures, without calling Stripe
 or applying migrations.
+
+## Customer OAuth two-factor challenge storage
+
+The Google callback and code/binding exchange keep their existing wire format.
+After a valid exchange, a customer with 2FA enabled receives the same
+`{ twoFactorRequired: true, expiresIn }` response and the same HttpOnly
+`customer_2fa_challenge` cookie (the `twoFactor` cookie key).
+
+Pending second-factor state now lives in `customer_oauth_challenges`, separately
+from `customer_sessions`. The challenge stores a token digest, customer-account
+id, fingerprint of the current encrypted TOTP secret, expiry and attempt count.
+The redeemed OAuth exchange row is revoked; it is never reused as the 2FA session.
+
+`POST /v1/customer/auth/2fa/verify` keeps accepting `{ code }`. A valid challenge
+and TOTP code consume the challenge and insert a fresh session in one transaction.
+Failed challenge attempts persist independently of that transaction. Changing the
+account's 2FA secret invalidates outstanding challenges. Legacy in-flight 2FA
+cookies require restarting Google login; established sessions remain usable.
+
+The new entity is registered in CustomerAuthModule, the runtime TypeORM config,
+and the CLI DataSource. No migration file is supplied by this change. Generate
+and apply your own migration before exercising the new 2FA flow.
+
+## Stripe refunds
+
+`POST /v1/payments/refunds` still requires `payments:refund` and accepts
+`{ paymentId, idempotencyKey, reason }`. It now requests a **full USD refund**
+from Stripe using the successful payment's PaymentIntent. Free-text reasons
+remain local; they are not passed as Stripe's restricted `reason` enum.
+
+A committed PENDING record reserves the payment before contacting Stripe. The
+payment-row lock blocks another pending/successful full refund, even under a
+different key. Repeating the same request returns its settled result or resumes
+its pending operation. Reusing a key with another payment or reason returns 409.
+Stripe receives a stable key derived from the local refund id. If a response is
+lost, retry the same POST with the same key: stored provider ids or paginated
+Stripe metadata lookup recover the original refund, including beyond Stripe's
+idempotency retention window. Old pending-only records can be resumed this way;
+deploying the change does not automatically submit those old requests.
+
+Configure the existing `/v1/payments/webhook` Stripe destination to include
+`refund.created`, `refund.updated`, and `refund.failed`, alongside
+`payment_intent.succeeded`. Signature validation and transactional event
+deduplication also apply to refunds. Both POST and webhooks retrieve the current
+Stripe refund under order/payment/refund locks, validate its identity, amount,
+currency and PaymentIntent, and update the refund/order atomically. This avoids
+regression from delayed event snapshots and permits later bank failures.
+
+Stripe `succeeded` maps to SUCCESS; `failed`/`canceled` map to FAILED;
+`pending`/`requires_action` remain PENDING. `completedAt` is set on settlement.
+Transport failures and uncertain outcomes return 503 and leave the reservation
+pending for retry. A definitive invalid creation request returns 400 and marks
+the reservation FAILED. A new key is permitted after a confirmed failure.
+
+An order becomes REFUNDED only when all its successful payments are fully
+refunded. The original payments retain SUCCESS as the historical charge result.
+A later failure on a refunded order changes it to PAYMENT_REQUIRES_REFUND.
+Refunding just one duplicate charge leaves the order flagged for review while
+another charge is retained. Dashboard-created refunds are not imported; partial
+refunds and automatic background retry scheduling are outside this endpoint.
+
+No entity changes or migrations are required. Unit tests mock Stripe and do not
+move money. Before release, exercise a test-mode payment and refund with the
+configured webhook destination. See [Stripe refund events](https://docs.stripe.com/refunds#refund-events)
+and [Stripe idempotency](https://docs.stripe.com/api/idempotent_requests).

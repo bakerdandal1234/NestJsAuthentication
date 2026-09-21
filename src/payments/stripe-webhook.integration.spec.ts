@@ -10,6 +10,7 @@ import { Payment, PaymentMethod, PaymentProvider, PaymentStatus } from './entity
 import { StripeWebhookEvent } from './entity/stripe-webhook-event.entity';
 import { StripeWebhookService } from './stripe-webhook.service';
 import { OrdersService } from '../orders/OrdersService.service';
+import { RefundsService } from './refunds.service';
 
 // Explicit opt-in: uses isolated test records in the configured local database,
 // deletes only those records, and never calls Stripe or applies migrations.
@@ -27,7 +28,7 @@ describeDatabase('Stripe order confirmation (PostgreSQL)', () => {
   beforeAll(async () => {
     db = new DataSource({ ...AppDataSource.options, logging: false, synchronize: false, migrationsRun: false });
     await db.initialize();
-    service = new StripeWebhookService(config, db);
+    service = new StripeWebhookService(config, db, new RefundsService(db, config));
   }, 30000);
 
   beforeEach(async () => {
@@ -84,7 +85,7 @@ describeDatabase('Stripe order confirmation (PostgreSQL)', () => {
     const failing = new StripeWebhookService(config, { transaction: (work: any) => db.transaction(async (manager) => {
       jest.spyOn(manager.getRepository(Order), 'save').mockRejectedValue(new Error('injected order failure'));
       return work(manager);
-    }) } as DataSource);
+    }) } as DataSource, new RefundsService(db, config));
     await expect(failing.handleWebhook(req)).rejects.toThrow('injected order failure');
     expect((await db.getRepository(Payment).findOneByOrFail({ id: p.id })).status).toBe(PaymentStatus.PENDING);
     expect((await db.getRepository(Order).findOneByOrFail({ id: order.id })).status).toBe(OrderStatus.PENDING);
@@ -103,7 +104,7 @@ describeDatabase('Stripe order confirmation (PostgreSQL)', () => {
 
   it('cannot overwrite payment confirmation with a concurrent cancellation', async () => {
     const p = await payment();
-    const orders = new OrdersService(db.getRepository(Order), {} as any, {} as any, {} as any);
+    const orders = new OrdersService(db.getRepository(Order), {} as any, {} as any, {} as any, db);
     await Promise.allSettled([service.handleWebhook(request(p)), orders.cancel(order.id)]);
     const finalOrder = await db.getRepository(Order).findOneByOrFail({ id: order.id });
     expect([OrderStatus.CONFIRMED, OrderStatus.PAYMENT_REQUIRES_REFUND]).toContain(finalOrder.status);

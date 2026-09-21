@@ -2,17 +2,14 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 
 import {
-  CUSTOMER_2FA_CHALLENGE_TTL_SECONDS,
   CUSTOMER_BINDING_PATTERN,
-  CUSTOMER_CHALLENGE_PATTERN,
   CUSTOMER_EXCHANGE_CODE_PATTERN,
   CUSTOMER_EXCHANGE_TTL_SECONDS,
-  CUSTOMER_PENDING_2FA_PREFIX,
   CUSTOMER_PENDING_EXCHANGE_PREFIX,
 } from './customer-auth.constants';
 
 export interface IssuedExchangeCode {
-  /** The session row this code will become. Embedded in the code itself. */
+  /** The exchange placeholder id. Embedded in the code itself. */
   sessionId: string;
   /** Goes in the redirect URL. Useless on its own. */
   code: string;
@@ -23,21 +20,14 @@ export interface IssuedExchangeCode {
   expiresIn: number;
 }
 
-export interface IssuedChallenge {
-  /** Goes in an httpOnly cookie. Proves "Google already succeeded". */
-  challenge: string;
-  pendingHash: string;
-  expiresIn: number;
-}
-
 /**
- * Mints and validates the two short-lived, single-use handoff artifacts of
- * the customer login: the OAuth exchange code and the 2FA challenge.
+ * Mints and validates the short-lived, single-use OAuth code/binding pair.
+ * The later 2FA handoff is owned by CustomerOAuthChallengeService.
  *
  * Responsibility: their format and their cryptographic binding only. It
  * never touches the database, cookies or HTTP — the caller stores
  * `pendingHash` and compares it back later, which is what makes each
- * artifact single-use (redeeming overwrites the stored hash).
+ * artifact single-use (redeeming replaces the hash or revokes the row).
  *
  * The split-secret design is the point: the code travels in the URL, the
  * binding travels in an httpOnly cookie, and the stored hash only matches
@@ -76,37 +66,6 @@ export class CustomerExchangeService {
     return `${CUSTOMER_PENDING_EXCHANGE_PREFIX}${sha256(`${code}:${binding}`)}`;
   }
 
-  // -------------------------------------------------------------------
-  // 2FA challenge
-  // -------------------------------------------------------------------
-
-  issueChallenge(sessionId: string): IssuedChallenge {
-    const secret = randomBytes(32).toString('hex');
-
-    return {
-      challenge: `${sessionId}.${secret}`,
-      pendingHash: this.challengeHashFor(secret),
-      expiresIn: CUSTOMER_2FA_CHALLENGE_TTL_SECONDS,
-    };
-  }
-
-  /** Splits a challenge cookie value, or null when it isn't well-formed. */
-  parseChallenge(value: unknown): { sessionId: string; secret: string } | null {
-    if (typeof value !== 'string' || !CUSTOMER_CHALLENGE_PATTERN.test(value)) {
-      return null;
-    }
-
-    const [sessionId, secret] = value.split('.');
-
-    return { sessionId, secret };
-  }
-
-  challengeHashFor(secret: string): string {
-    return `${CUSTOMER_PENDING_2FA_PREFIX}${sha256(secret)}`;
-  }
-
-  // -------------------------------------------------------------------
-
   /** Constant-time comparison of a stored hash against a recomputed one. */
   matches(stored: string, expected: string): boolean {
     const a = Buffer.from(stored);
@@ -115,7 +74,7 @@ export class CustomerExchangeService {
     return a.length === b.length && timingSafeEqual(a, b);
   }
 
-  /** One generic error for every rejected code/challenge. */
+  /** One generic error for every rejected exchange code. */
   invalid(): UnauthorizedException {
     return new UnauthorizedException('Invalid or expired login code');
   }

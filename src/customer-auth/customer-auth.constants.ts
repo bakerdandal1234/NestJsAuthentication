@@ -102,13 +102,12 @@ export const CUSTOMER_EXCHANGE_CODE_PATTERN =
 /** `<64 hex>` */
 export const CUSTOMER_BINDING_PATTERN = /^[0-9a-f]{64}$/;
 
-/** `<sessionId uuid>.<64 hex>` — same shape as the exchange code. */
-export const CUSTOMER_CHALLENGE_PATTERN = CUSTOMER_EXCHANGE_CODE_PATTERN;
+/** `<64 hex>` — opaque token for customer_oauth_challenges, not a session id. */
+export const CUSTOMER_CHALLENGE_PATTERN = /^[0-9a-f]{64}$/;
 
 /**
- * Markers stored in customer_sessions.refreshTokenHash while a row is NOT
- * yet a real session. A row carrying either prefix can never be refreshed,
+ * Marker stored in customer_sessions.refreshTokenHash while the OAuth code
+ * is unredeemed. A row carrying this prefix can never be refreshed,
  * can never authenticate a request, and is never listed as a device.
  */
 export const CUSTOMER_PENDING_EXCHANGE_PREFIX = 'oauth:';
-export const CUSTOMER_PENDING_2FA_PREFIX = '2fa:';

@@ -391,13 +391,19 @@ export class AuthService {
   // ---------------------------------------------------------------------
 
   /**
-   * bcrypt only considers the first 72 bytes of its input. Our refresh JWTs
-   * share a long identical prefix across rotations of the *same* session
-   * (header + sub/email/role/sid never change — only iat/exp/signature do,
-   * and those land past byte 72), so bcrypt.compare() could not actually
-   * tell an old, already-rotated token apart from the current one. Hashing
-   * the full token with SHA-256 first collapses the *entire* string into a
-   * fixed-length digest before bcrypt ever sees it, fixing that blind spot.
+   * Deterministic digest used as the *stored* refresh-token identifier
+   * (Session.refreshTokenHash) — deliberately not bcrypt. A refresh token
+   * is already a high-entropy signed JWT, not a low-entropy human
+   * password, so bcrypt's slow salted hashing buys no real brute-force
+   * protection here, while its per-call random salt would make two hashes
+   * of the *same* token compare unequal, and its cost (SALT_ROUNDS)
+   * needlessly widened the read-compare-write window during rotation. A
+   * plain SHA-256 digest is fast and deterministic, which is exactly what
+   * lets rotateRefreshTokenIfMatches() rotate atomically via a single
+   * `UPDATE ... WHERE refreshTokenHash = :expectedHash` — the database
+   * resolves any concurrent-refresh race itself, closing the TOCTOU gap
+   * that existed when the hash was compared and rotated as two separate,
+   * unlocked steps.
    */
   private hashRefreshToken(refreshToken: string): string {
     return crypto.createHash('sha256').update(refreshToken).digest('hex');
@@ -477,7 +483,11 @@ export class AuthService {
    * token for a validated session without rotating its refresh token.
    */
   private async signAccessToken(user: User, sessionId: string): Promise<string> {
-    const accessPayload: JwtPayload = { sub: user.id, email: user.email, sid: sessionId };
+    // jti: distinguishes tokens issued for the same session within the same
+    // second, since iat/exp alone (both second-granularity) would otherwise
+    // make two HMAC-signed tokens with identical claims byte-for-byte
+    // identical.
+    const accessPayload: JwtPayload = { sub: user.id, email: user.email, sid: sessionId, jti: crypto.randomUUID() };
     return this.jwtService.signAsync(accessPayload, {
       secret: this.configService.get<string>('JWT_ACCESS_SECRET'),
       expiresIn: this.configService.get<string>('JWT_ACCESS_EXPIRES_IN') as any,
@@ -487,14 +497,17 @@ export class AuthService {
   private async issueTokens(user: User, sessionId: string): Promise<SignedTokenPair> {
     const accessToken = await this.signAccessToken(user, sessionId);
 
-    const refreshPayload: JwtPayload = { sub: user.id, email: user.email, sid: sessionId };
+    // jti: see signAccessToken() above — matters more here, since
+    // rotateRefreshTokenIfMatches() treats the hash as the token's identity.
+    const refreshPayload: JwtPayload = { sub: user.id, email: user.email, sid: sessionId, jti: crypto.randomUUID() };
 
     const refreshToken = await this.jwtService.signAsync(refreshPayload, {
       secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
       expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRES_IN') as any,
     });
 
-    const refreshTokenHash = await bcrypt.hash(this.hashRefreshToken(refreshToken), SALT_ROUNDS);
+    // Deterministic on purpose — see hashRefreshToken()'s doc comment.
+    const refreshTokenHash = this.hashRefreshToken(refreshToken);
 
     return { accessToken, refreshToken, refreshTokenHash };
   }
@@ -617,21 +630,35 @@ export class AuthService {
       throw this.invalidRefreshTokenError();
     }
 
-    // 5. Check the hash.
-    const matches = await bcrypt.compare(this.hashRefreshToken(refreshToken), session.refreshTokenHash);
-    if (!matches) {
-      // Reused or forged refresh token: revoke the session defensively.
-      await this.sessionService.revokeSession(session.id);
-      throw this.invalidRefreshTokenError();
-    }
+    // 5. Compute the presented token's deterministic hash (see
+    // hashRefreshToken()'s doc comment for why this isn't bcrypt).
+    const candidateHash = this.hashRefreshToken(refreshToken);
 
-    // 6. Rotate: issue a new pair bound to the same session.
+    // 6. Rotate: issue a new pair bound to the same session, then swap the
+    // hash atomically, conditioned on the row still holding candidateHash.
+    // This closes the race that existed when "compare" and "rotate" were two
+    // separate, unlocked steps: if two requests reach here with the same
+    // (old) token at the same time, only one UPDATE can match — the other
+    // gets back false and is treated exactly like a wrong hash.
     const user = await this.usersService.findById(session.userId);
-    const { accessToken, refreshToken: newRefreshToken, refreshTokenHash } = await this.issueTokens(
+    const { accessToken, refreshToken: newRefreshToken, refreshTokenHash: newHash } = await this.issueTokens(
       user,
       session.id,
     );
-    await this.sessionService.rotateRefreshToken(session.id, refreshTokenHash);
+
+    const rotated = await this.sessionService.rotateRefreshTokenIfMatches(
+      session.id,
+      candidateHash,
+      newHash,
+    );
+
+    if (!rotated) {
+      // Either the presented token never matched this session, or another
+      // request already rotated it first (a lost race, or a genuinely
+      // reused/forged token). Revoke defensively either way, same as before.
+      await this.sessionService.revokeSession(session.id);
+      throw this.invalidRefreshTokenError();
+    }
 
     return { accessToken, refreshToken: newRefreshToken, sessionId: session.id, userId: user.id };
   }

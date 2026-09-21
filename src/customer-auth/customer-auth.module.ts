@@ -17,6 +17,8 @@ import { CustomerTokensService } from './customer-tokens.service';
 import { CustomerAccount } from './entities/customer-account.entity';
 import { CustomerLoginHistory } from './entities/customer-login-history.entity';
 import { CustomerSession } from './entities/customer-session.entity';
+import { CustomerOAuthChallenge } from './entities/customer-oauth-challenge.entity';
+import { CustomerOAuthChallengeService } from './customer-oauth-challenge.service';
 import { CustomerOAuthRedirectFilter } from './filters/customer-oauth-redirect.filter';
 import { CustomerTwoFactorService } from './customer-two-factor.service';
 import {
@@ -38,6 +40,7 @@ import { CustomerJwtStrategy } from './strategies/customer-jwt.strategy';
     TypeOrmModule.forFeature([
       CustomerAccount,
       CustomerSession,
+      CustomerOAuthChallenge,
       CustomerLoginHistory,
       Customer,
     ]),
@@ -52,6 +55,7 @@ import { CustomerJwtStrategy } from './strategies/customer-jwt.strategy';
     // Single-responsibility collaborators
     CustomerCookiesService,
     CustomerExchangeService,
+    CustomerOAuthChallengeService,
     CustomerFrontendService,
     CustomerOAuthStateService,
     CustomerSessionsService,

@@ -5,8 +5,13 @@ import { isUUID } from 'class-validator';
 import { DataSource, EntityManager, Not } from 'typeorm';
 import Stripe from 'stripe';
 import { StripeWebhookEvent } from './entity/stripe-webhook-event.entity';
-import { Payment, PaymentProvider, PaymentStatus } from './entity/payment.entity';
+import {
+  Payment,
+  PaymentProvider,
+  PaymentStatus,
+} from './entity/payment.entity';
 import { Order, OrderStatus } from '../orders/entity/Order.entity';
+import { RefundsService } from './refunds.service';
 
 @Injectable()
 export class StripeWebhookService {
@@ -15,8 +20,11 @@ export class StripeWebhookService {
   constructor(
     private readonly configService: ConfigService,
     private readonly dataSource: DataSource,
+    private readonly refundsService: RefundsService,
   ) {
-    this.stripe = new Stripe(configService.getOrThrow<string>('STRIPE_SECRET_KEY'));
+    this.stripe = new Stripe(
+      configService.getOrThrow<string>('STRIPE_SECRET_KEY'),
+    );
   }
 
   async handleWebhook(req: Request) {
@@ -34,7 +42,11 @@ export class StripeWebhookService {
 
     let event: Stripe.Event;
     try {
-      event = this.stripe.webhooks.constructEvent(req.rawBody, signature, secret);
+      event = this.stripe.webhooks.constructEvent(
+        req.rawBody,
+        signature,
+        secret,
+      );
     } catch {
       throw new BadRequestException('Invalid Stripe signature');
     }
@@ -43,18 +55,41 @@ export class StripeWebhookService {
     // lets only one delivery apply the payment/order changes.
     return this.dataSource.transaction(async (manager) => {
       const events = manager.getRepository(StripeWebhookEvent);
-      await events.createQueryBuilder().insert().values({
-        stripeEventId: event.id,
-        type: event.type,
-        processedAt: null,
-      }).orIgnore().execute();
+      await events
+        .createQueryBuilder()
+        .insert()
+        .values({
+          stripeEventId: event.id,
+          type: event.type,
+          processedAt: null,
+        })
+        .orIgnore()
+        .execute();
       const stored = await events.findOneOrFail({
         where: { stripeEventId: event.id },
         lock: { mode: 'pessimistic_write' },
       });
       if (!stored.processedAt) {
         if (event.type === 'payment_intent.succeeded') {
-          await this.handlePaymentIntentSucceeded(manager, event.data.object as Stripe.PaymentIntent);
+          await this.handlePaymentIntentSucceeded(
+            manager,
+            event.data.object as Stripe.PaymentIntent,
+          );
+        }
+        if (
+          event.type === 'refund.created' ||
+          event.type === 'refund.updated' ||
+          event.type === 'refund.failed'
+        ) {
+          const refund = event.data.object as Stripe.Refund;
+          // Metadata recovers a refund even when Stripe's webhook beats the
+          // original POST response. Synchronize reads current provider state;
+          // an out-of-order event must not regress the local refund/order.
+          await this.refundsService.synchronize(
+            manager,
+            refund.id,
+            refund.metadata?.flowdeskRefundId,
+          );
         }
         await events.update(stored.id, { processedAt: new Date() });
       }
@@ -67,10 +102,15 @@ export class StripeWebhookService {
     });
   }
 
-  private async handlePaymentIntentSucceeded(manager: EntityManager, intent: Stripe.PaymentIntent): Promise<void> {
+  private async handlePaymentIntentSucceeded(
+    manager: EntityManager,
+    intent: Stripe.PaymentIntent,
+  ): Promise<void> {
     const paymentId = intent.metadata?.flowdeskPaymentId;
     if (!paymentId || !isUUID(paymentId)) {
-      throw new BadRequestException('Missing or invalid flowdeskPaymentId in Stripe metadata');
+      throw new BadRequestException(
+        'Missing or invalid flowdeskPaymentId in Stripe metadata',
+      );
     }
     const payments = manager.getRepository(Payment);
     const orders = manager.getRepository(Order);
@@ -80,35 +120,55 @@ export class StripeWebhookService {
     // Lock the order before its payments so distinct successful payments for
     // the same order are serialized and a second charge is not fulfilled twice.
     const order = await orders.findOne({
-      where: { id: reference.orderId }, lock: { mode: 'pessimistic_write' },
+      where: { id: reference.orderId },
+      lock: { mode: 'pessimistic_write' },
     });
     if (!order) throw new BadRequestException('Order not found');
     const payment = await payments.findOneOrFail({
-      where: { id: paymentId }, lock: { mode: 'pessimistic_write' },
+      where: { id: paymentId },
+      lock: { mode: 'pessimistic_write' },
     });
     const expectedAmount = Math.round(Number(payment.amount) * 100);
-    if (payment.provider !== PaymentProvider.STRIPE ||
-        (payment.providerTransactionId && payment.providerTransactionId !== intent.id) ||
-        intent.metadata.orderId !== order.id || intent.status !== 'succeeded' ||
-        intent.currency !== 'usd' || intent.amount !== expectedAmount ||
-        intent.amount_received !== expectedAmount || !Number.isSafeInteger(expectedAmount)) {
-      throw new BadRequestException('Stripe payment does not match the stored payment');
+    if (
+      payment.provider !== PaymentProvider.STRIPE ||
+      (payment.providerTransactionId &&
+        payment.providerTransactionId !== intent.id) ||
+      intent.metadata.orderId !== order.id ||
+      intent.status !== 'succeeded' ||
+      intent.currency !== 'usd' ||
+      intent.amount !== expectedAmount ||
+      intent.amount_received !== expectedAmount ||
+      !Number.isSafeInteger(expectedAmount)
+    ) {
+      throw new BadRequestException(
+        'Stripe payment does not match the stored payment',
+      );
     }
 
     // Another event id for an already successful intent must not change paidAt
     // or regress an order that has since been completed/refunded.
-    if (payment.status === PaymentStatus.SUCCESS && order.status !== OrderStatus.PENDING) return;
+    if (
+      payment.status === PaymentStatus.SUCCESS &&
+      order.status !== OrderStatus.PENDING
+    )
+      return;
 
     const otherSuccess = await payments.existsBy({
-      orderId: order.id, id: Not(payment.id), status: PaymentStatus.SUCCESS,
+      orderId: order.id,
+      id: Not(payment.id),
+      status: PaymentStatus.SUCCESS,
     });
-    const canConfirm = order.status === OrderStatus.PENDING && !otherSuccess &&
+    const canConfirm =
+      order.status === OrderStatus.PENDING &&
+      !otherSuccess &&
       Math.round(Number(order.totalAmount) * 100) === expectedAmount;
     payment.providerTransactionId = intent.id;
     payment.status = PaymentStatus.SUCCESS;
     payment.paidAt ??= new Date();
     await payments.save(payment);
-    order.status = canConfirm ? OrderStatus.CONFIRMED : OrderStatus.PAYMENT_REQUIRES_REFUND;
+    order.status = canConfirm
+      ? OrderStatus.CONFIRMED
+      : OrderStatus.PAYMENT_REQUIRES_REFUND;
     await orders.save(order);
   }
 }

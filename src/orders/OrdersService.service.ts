@@ -4,7 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 
 import { Order, OrderStatus } from './entity/Order.entity';
 import { OrderItem } from './entity/order-item.entity';
@@ -26,6 +26,8 @@ export class OrdersService {
 
     @InjectRepository(Product)
     private readonly productRepository: Repository<Product>,
+
+    private readonly dataSource: DataSource,
   ) {}
 
   async create(dto: CreateOrderDto): Promise<Order> {
@@ -93,26 +95,34 @@ export class OrdersService {
       0,
     );
 
-    const order = this.orderRepository.create({
-      customerId: customer.id,
-      status: OrderStatus.PENDING,
-      subtotal: subtotal.toFixed(2),
-      totalAmount: subtotal.toFixed(2),
+    // Order + its items must land together or not at all: creating both
+    // through the same transactional EntityManager means a failure while
+    // saving the items rolls back the order row too, instead of leaving a
+    // PENDING order with zero items sitting in the database.
+    const savedOrder = await this.dataSource.transaction(async (manager) => {
+      const order = manager.create(Order, {
+        customerId: customer.id,
+        status: OrderStatus.PENDING,
+        subtotal: subtotal.toFixed(2),
+        totalAmount: subtotal.toFixed(2),
+      });
+
+      const persistedOrder = await manager.save(order);
+
+      const orderItems = items.map((item) =>
+        manager.create(OrderItem, {
+          orderId: persistedOrder.id,
+          productId: item.productId,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          subtotal: item.subtotal,
+        }),
+      );
+
+      await manager.save(OrderItem, orderItems);
+
+      return persistedOrder;
     });
-
-    const savedOrder = await this.orderRepository.save(order);
-
-    const orderItems = items.map((item) =>
-      this.orderItemRepository.create({
-        orderId: savedOrder.id,
-        productId: item.productId,
-        quantity: item.quantity,
-        unitPrice: item.unitPrice,
-        subtotal: item.subtotal,
-      }),
-    );
-
-    await this.orderItemRepository.save(orderItems);
 
     return this.findById(savedOrder.id);
   }
