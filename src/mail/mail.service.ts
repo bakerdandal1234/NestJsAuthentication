@@ -62,6 +62,8 @@ export class MailService {
     );
   }
 
+  
+
   async sendAccountLockedNotice(to: string): Promise<void> {
     await this.send(
       to,

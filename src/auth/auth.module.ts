@@ -1,3 +1,6 @@
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { StaffOAuthChallenge } from './staff-oauth-challenge.entity';
+import { StaffOAuthChallengeService } from './staff-oauth-challenge.service';
 import { Module } from '@nestjs/common';
 import { JwtModule, JwtModuleOptions } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
@@ -14,6 +17,7 @@ import { AuthorizationModule } from '../authorization/authorization.module';
 
 @Module({
   imports: [
+    TypeOrmModule.forFeature([StaffOAuthChallenge]),
     UsersModule,
     MailModule,
     SessionsModule,
@@ -34,7 +38,7 @@ import { AuthorizationModule } from '../authorization/authorization.module';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, GoogleStrategy, GithubStrategy],
+  providers: [StaffOAuthChallengeService, AuthService, JwtStrategy, GoogleStrategy, GithubStrategy],
   exports: [AuthService],
 })
 export class AuthModule {}

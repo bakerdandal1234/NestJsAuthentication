@@ -1,3 +1,4 @@
+import { StaffOAuthChallengeService, STAFF_OAUTH_2FA_TTL_SECONDS } from './staff-oauth-challenge.service';
 import {
   BadRequestException,
   ConflictException,
@@ -105,6 +106,7 @@ export class AuthService {
     private readonly mailService: MailService,
     private readonly sessionService: SessionService,
     private readonly authorizationService: AuthorizationService,
+    private readonly oauthChallenges: StaffOAuthChallengeService,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -246,8 +248,40 @@ export class AuthService {
    * Session as a normal password login (Stage 3 session flow, reused
    * as-is via issueTokens()/createSession()/rotateRefreshToken()).
    */
-  async loginWithOAuth(profile: OAuthProfile, ctx: LoginContext): Promise<LoginResult> {
+  async loginWithOAuth(profile: OAuthProfile, ctx: LoginContext): Promise<LoginResult | { twoFactorRequired: true; challenge: string; expiresIn: number }> {
     const user = await this.resolveOAuthUser(profile);
+    if (user.lockedUntil && user.lockedUntil > new Date()) {
+      throw new ForbiddenException('Account temporarily locked');
+    }
+    if (user.isTwoFactorEnabled) {
+      if (!user.twoFactorSecret) {
+        throw new UnauthorizedException('Two-factor authentication is unavailable');
+      }
+      const challenge = await this.oauthChallenges.create(user.id, user.twoFactorSecret);
+      return { twoFactorRequired: true, challenge, expiresIn: STAFF_OAUTH_2FA_TTL_SECONDS };
+    }
+    return this.completeOAuthLogin(user, ctx);
+  }
+
+  async verifyOAuthTwoFactor(challengeToken: string | undefined, code: string, ctx: LoginContext): Promise<LoginResult> {
+    const challenge = await this.oauthChallenges.attempt(challengeToken);
+    const user = await this.usersService.findById(challenge.userId);
+    if (!user || !user.isTwoFactorEnabled || !user.twoFactorSecret ||
+        this.oauthChallenges.fingerprint(user.twoFactorSecret) !== challenge.secretFingerprint ||
+        (user.lockedUntil && user.lockedUntil > new Date())) {
+      throw new UnauthorizedException('Invalid or expired two-factor challenge');
+    }
+    if (!/^\d{6}$/.test(code) || !speakeasy.totp.verify({
+      secret: user.twoFactorSecret, encoding: 'base32', token: code, window: 1,
+    })) {
+      await this.recordAttempt(user, ctx, false, 'Invalid OAuth two-factor code');
+      throw new UnauthorizedException('Invalid two-factor authentication code');
+    }
+    await this.oauthChallenges.consume(challenge.tokenHash);
+    return this.completeOAuthLogin(user, ctx);
+  }
+
+  private async completeOAuthLogin(user: User, ctx: LoginContext): Promise<LoginResult> {
 
     const refreshTtlMs = parseDurationMs(
       this.configService.get<string>('JWT_REFRESH_EXPIRES_IN')!,
@@ -440,23 +474,20 @@ export class AuthService {
    * narrow template-literal type, but our env values are validated at
    * startup (env.validation.ts) so a plain string is safe here. Extracted
    * out of issueTokens() so exchangeOAuthCode() can mint a fresh access
-   * token on its own, without touching sessions/refresh tokens at all.
+   * token for a validated session without rotating its refresh token.
    */
-  private async signAccessToken(user: User): Promise<string> {
-    const accessPayload: JwtPayload = { sub: user.id, email: user.email };
+  private async signAccessToken(user: User, sessionId: string): Promise<string> {
+    const accessPayload: JwtPayload = { sub: user.id, email: user.email, sid: sessionId };
     return this.jwtService.signAsync(accessPayload, {
       secret: this.configService.get<string>('JWT_ACCESS_SECRET'),
       expiresIn: this.configService.get<string>('JWT_ACCESS_EXPIRES_IN') as any,
     });
   }
 
-  private async issueTokens(user: User, sessionId?: string): Promise<SignedTokenPair> {
-    const accessToken = await this.signAccessToken(user);
+  private async issueTokens(user: User, sessionId: string): Promise<SignedTokenPair> {
+    const accessToken = await this.signAccessToken(user, sessionId);
 
-    // `sid` is only embedded when a Session exists for this token pair.
-    const refreshPayload: JwtPayload = sessionId
-      ? { sub: user.id, email: user.email, sid: sessionId }
-      : { sub: user.id, email: user.email };
+    const refreshPayload: JwtPayload = { sub: user.id, email: user.email, sid: sessionId };
 
     const refreshToken = await this.jwtService.signAsync(refreshPayload, {
       secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
@@ -483,9 +514,9 @@ export class AuthService {
    * privilege (the session + refresh cookie already exist by the time this
    * code is minted).
    */
-  async createOAuthExchangeCode(userId: string): Promise<string> {
+  async createOAuthExchangeCode(userId: string, sessionId: string): Promise<string> {
     return this.jwtService.signAsync(
-      { sub: userId, type: 'oauth_exchange' },
+      { sub: userId, sid: sessionId, type: 'oauth_exchange' },
       {
         secret: this.configService.get<string>('OAUTH_CODE_SECRET'),
         expiresIn: `${OAUTH_CODE_TTL_SECONDS}s`,
@@ -497,7 +528,7 @@ export class AuthService {
   async exchangeOAuthCode(code: string): Promise<{ accessToken: string }> {
     const invalidCodeError = () => new UnauthorizedException('Invalid or expired code');
 
-    let payload: { sub: string; type: string };
+    let payload: { sub: string; sid: string; type: string };
     try {
       payload = await this.jwtService.verifyAsync(code, {
         secret: this.configService.get<string>('OAUTH_CODE_SECRET'),
@@ -506,9 +537,12 @@ export class AuthService {
       throw invalidCodeError();
     }
 
-    if (payload.type !== 'oauth_exchange') {
+    if (payload.type !== 'oauth_exchange' || !payload.sid) {
       throw invalidCodeError();
     }
+
+    const sessionId = payload.sid;
+    await this.sessionService.requireActiveSession(sessionId, payload.sub);
 
     let user: User;
     try {
@@ -517,7 +551,7 @@ export class AuthService {
       throw invalidCodeError();
     }
 
-    const accessToken = await this.signAccessToken(user);
+    const accessToken = await this.signAccessToken(user, sessionId);
     return { accessToken };
   }
 

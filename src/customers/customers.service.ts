@@ -21,10 +21,6 @@ export class CustomersService {
   ) {}
 
   async create(dto: CreateCustomerDto): Promise<Customer> {
-    // email is now optional. Only run the duplicate check when one was
-    // actually provided — `where: { email: undefined }` is dropped by
-    // TypeORM rather than matching "no email", so skipping this guard
-    // would incorrectly match an arbitrary existing row.
     if (dto.email) {
       const existing = await this.customerRepository.findOne({ where: { email: dto.email } });
       if (existing) {

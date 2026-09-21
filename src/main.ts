@@ -1,4 +1,5 @@
 import { NestFactory } from '@nestjs/core';
+import { json, urlencoded } from 'express';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { ValidationPipe, VersioningType } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -6,9 +7,19 @@ import helmet from 'helmet';
 import { parse as parseCookies } from 'cookie';
 import type { Request, Response, NextFunction } from 'express';
 import { AppModule } from './app.module';
-
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  app.use(
+  json({
+    verify: (req: Request, _res, buf) => {
+      if (req.originalUrl === '/v1/payments/webhook') {
+        req.rawBody = buf;
+      }
+    },
+  }),
+);
+
+app.use(urlencoded({ extended: true }));
   const configService = app.get(ConfigService);
 
   // Needed so `secure` cookies (see AuthService.getAuthCookieSettings()) are

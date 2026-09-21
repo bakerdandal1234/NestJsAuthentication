@@ -19,7 +19,9 @@ import { CategoriesModule } from './categories/categories.module';
 import { ProductsModule } from './products/products.module';
 import { CustomersModule } from './customers/customers.module';
 import { InventoryModule } from './inventory/inventory.module';
-
+import { OrdersModule } from './orders/OrdersModule.module';
+import { PaymentsModule } from './payments/payments.module';
+import { CustomerAuthModule } from './customer-auth/customer-auth.module';
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -47,6 +49,9 @@ import { InventoryModule } from './inventory/inventory.module';
     ProductsModule,
     CustomersModule,
     InventoryModule,
+    OrdersModule,
+    PaymentsModule,
+    CustomerAuthModule,
   ],
   controllers: [AppController],
   providers: [

@@ -54,7 +54,7 @@ describe('ProductsService (Inventory integration)', () => {
     productRepository = createMockProductRepository();
     productRepository.findOne.mockResolvedValue(null); // no existing SKU
     productRepository.save.mockImplementation((entity) =>
-      Promise.resolve({ id: 'prod-1', ...entity }) as Promise<Product>,
+      Promise.resolve({ ...entity, id: 'prod-1' }) as Promise<Product>,
     );
 
     categoriesService = { findById: jest.fn().mockResolvedValue({ id: 'cat-1' } as Category) };

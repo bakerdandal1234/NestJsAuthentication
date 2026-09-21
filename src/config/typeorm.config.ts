@@ -1,3 +1,7 @@
+import { StaffOAuthChallenge } from '../auth/staff-oauth-challenge.entity';
+import { Payment } from '../payments/entity/payment.entity';
+import { Refund } from '../payments/entity/refund.entity';
+import { StripeWebhookEvent } from '../payments/entity/stripe-webhook-event.entity';
 import { registerAs } from '@nestjs/config';
 import { TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { User } from '../users/entities/user.entity';
@@ -11,6 +15,12 @@ import { Category } from '../categories/entities/category.entity';
 import { Product } from '../products/entities/product.entity';
 import { Customer } from '../customers/entities/customer.entity';
 import { Inventory } from '../inventory/entities/inventory.entity';
+import { InventoryTransaction } from '../invertoryTansaction/entity/InventoryTransaction.entity';
+import { OrderItem } from '../orders/entity/order-item.entity';
+import { Order } from '../orders/entity/Order.entity';
+import { CustomerAccount } from '../customer-auth/entities/customer-account.entity';
+import { CustomerSession } from '../customer-auth/entities/customer-session.entity';
+import { CustomerLoginHistory } from '../customer-auth/entities/customer-login-history.entity';
 export default registerAs('database', (): TypeOrmModuleOptions => ({
   type: 'postgres',
   host: process.env.DB_HOST,
@@ -18,7 +28,7 @@ export default registerAs('database', (): TypeOrmModuleOptions => ({
   username: process.env.DB_USERNAME,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  entities: [User, LoginHistory, Session,Role,Permission,UserRole,RolePermission,Category,Product,Customer,Inventory],
+  entities: [StaffOAuthChallenge,User, LoginHistory, Session,Role,Permission,UserRole,RolePermission,Category,Product,Customer,Inventory,InventoryTransaction,Order,OrderItem,Payment,Refund,StripeWebhookEvent,CustomerAccount,CustomerSession,CustomerLoginHistory ],
 
   // Fully migration-based now (both dev and production) — synchronize is
   // never used, to avoid drift between the schema TypeORM would infer from

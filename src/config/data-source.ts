@@ -1,3 +1,4 @@
+import { StaffOAuthChallenge } from '../auth/staff-oauth-challenge.entity';
 import 'dotenv/config';
 import { DataSource } from 'typeorm';
 import { User } from '../users/entities/user.entity';
@@ -11,6 +12,15 @@ import { Category } from '../categories/entities/category.entity';
 import { Product } from '../products/entities/product.entity';
 import { Customer } from '../customers/entities/customer.entity';
 import { Inventory } from '../inventory/entities/inventory.entity';
+import { InventoryTransaction } from '../invertoryTansaction/entity/InventoryTransaction.entity';
+import { OrderItem } from '../orders/entity/order-item.entity';
+import { Order } from '../orders/entity/Order.entity';
+import { Payment } from '../payments/entity/payment.entity'; 
+import { Refund } from '../payments/entity/refund.entity';
+import { StripeWebhookEvent } from '../payments/entity/stripe-webhook-event.entity';   
+import { CustomerAccount } from '../customer-auth/entities/customer-account.entity';
+import { CustomerSession } from '../customer-auth/entities/customer-session.entity';
+import { CustomerLoginHistory } from '../customer-auth/entities/customer-login-history.entity';
 /**
  * Standalone DataSource for the TypeORM CLI (migration:generate / migration:run).
  * This is separate from typeorm.config.ts (which NestJS uses at runtime via
@@ -22,10 +32,10 @@ export const AppDataSource = new DataSource({
   type: 'postgres',
   host: process.env.DB_HOST,
   port: parseInt(process.env.DB_PORT ?? '5432', 10),
-  username: process.env.DB_USERNAME,
+  username: process.env.DB_USERNAME,    
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  entities: [User, LoginHistory, Session,Role,Permission,UserRole,RolePermission,Category,Product,Customer,Inventory],
+  entities: [StaffOAuthChallenge,User, LoginHistory, Session,Role,Permission,UserRole,RolePermission,Category,Product,Customer,Inventory,InventoryTransaction,Order,OrderItem,Payment,Refund,StripeWebhookEvent,CustomerAccount,CustomerSession,CustomerLoginHistory ],
   migrations: ['src/migrations/*.ts'],
   synchronize: false,
   logging: true,

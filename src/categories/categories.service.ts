@@ -51,10 +51,7 @@ export class CategoriesService {
     return this.categoryRepository.save(category);
   }
 
-  // Blocked at the application level (clear 409 message) AND at the DB
-  // level (Product.category has onDelete: 'RESTRICT') -- the explicit
-  // check below gives a friendly error instead of a raw FK-violation
-  // bubbling up from Postgres.
+  // Friendly validation; DB RESTRICT remains the final safeguard.
   async delete(id: string): Promise<void> {
     const category = await this.findById(id);
 

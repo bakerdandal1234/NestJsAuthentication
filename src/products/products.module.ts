@@ -5,11 +5,12 @@ import { ProductsService } from './products.service';
 import { ProductsController } from './products.controller';
 import { CategoriesModule } from '../categories/categories.module';
 import { InventoryModule } from '../inventory/inventory.module';
+import { ImgbbService } from '../image-hosting/imgbb.service';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Product]), CategoriesModule, InventoryModule],
   controllers: [ProductsController],
-  providers: [ProductsService],
+  providers: [ProductsService,ImgbbService],
   exports: [ProductsService],
 })
 export class ProductsModule {}

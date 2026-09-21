@@ -11,10 +11,9 @@ export class CreateCustomerDto {
   @MaxLength(100)
   lastName: string;
 
-  @IsOptional()
   @IsEmail()
   @MaxLength(255)
-  email?: string;
+  email: string;
 
   @IsOptional()
   @IsString()

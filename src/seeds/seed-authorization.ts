@@ -47,6 +47,7 @@ const DEFAULT_PERMISSIONS = [
   { resource: 'products', action: 'read', description: 'View products' },
   { resource: 'products', action: 'create', description: 'Create products' },
   { resource: 'products', action: 'update', description: 'Update products (including activate/deactivate)' },
+  { resource: 'payments', action: 'refund', description: 'Create payment refunds' },
   { resource: 'customers', action: 'read', description: 'View customers' },
   { resource: 'customers', action: 'create', description: 'Create customers' },
   { resource: 'customers', action: 'update', description: 'Update customers' },

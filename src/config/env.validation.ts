@@ -1,5 +1,5 @@
 import { plainToInstance } from 'class-transformer';
-import { IsEnum, IsIn, IsInt, IsString, Max, Min, validateSync, IsOptional } from 'class-validator';
+import { IsEnum, IsIn, IsInt, IsString, Max, Min, validateSync, IsOptional, IsNotEmpty } from 'class-validator';
 
 enum Environment {
   Development = 'development',
@@ -113,6 +113,74 @@ class EnvironmentVariables {
   // AuthService.createOAuthExchangeCode()/exchangeOAuthCode().
   @IsString()
   OAUTH_CODE_SECRET: string;
+
+  @IsString()
+  STRIPE_SECRET_KEY: string;
+
+  @IsString()
+  STRIPE_WEBHOOK_SECRET: string;
+
+  @IsString()
+  @IsNotEmpty()
+  IMGBB_API_KEY: string;
+
+  // --- Customer Auth (Google-only) ---
+  // Optional, same reasoning as GOOGLE_CLIENT_ID above: CustomerGoogleStrategy
+  // falls back to placeholders so the app still boots; only
+  // /v1/customer/auth/google fails until these are set.
+  @IsOptional()
+  @IsString()
+  CUSTOMER_GOOGLE_CLIENT_ID?: string;
+
+  @IsOptional()
+  @IsString()
+  CUSTOMER_GOOGLE_CLIENT_SECRET?: string;
+
+  @IsOptional()
+  @IsString()
+  CUSTOMER_GOOGLE_CALLBACK_URL?: string;
+
+  // Required: deliberately separate from JWT_ACCESS_SECRET/JWT_REFRESH_SECRET
+  // so a staff token can never validate on a customer route and vice versa
+  // (different secret => signature verification fails outright).
+  @IsString()
+  CUSTOMER_JWT_ACCESS_SECRET: string;
+
+  @IsString()
+  CUSTOMER_JWT_REFRESH_SECRET: string;
+
+  // Required: HMAC key for the customer storage-free CSRF token, separate
+  // from CSRF_SECRET for the same isolation reason as the JWT secrets above.
+  @IsString()
+  CUSTOMER_CSRF_SECRET: string;
+
+  // Required: HMAC key for the signed Google `state` value of the customer
+  // flow (see CustomerOAuthStateService). Must be at least 32 bytes — that
+  // length check lives in the service, which fails fast at boot.
+  @IsString()
+  CUSTOMER_OAUTH_STATE_SECRET: string;
+
+  // Optional: absolute URL of the customer OAuth callback PAGE in the
+  // frontend (e.g. http://localhost:5173/customer/oauth/callback). When
+  // unset, FRONTEND_URL + '/customer/oauth/callback' is used. This is the
+  // only redirect target the Google callback will ever send a browser to.
+  @IsOptional()
+  @IsString()
+  CUSTOMER_FRONTEND_CALLBACK_URL?: string;
+
+  // Optional (kept for backwards compatibility, no longer read anywhere):
+  // the customer exchange code is a DB-backed one-time code bound to an
+  // httpOnly cookie, not a signed JWT, so it needs no signing key. It was
+  // previously declared as required while never being set, which would
+  // stop the whole app from booting.
+  @IsOptional()
+  @IsString()
+  CUSTOMER_OAUTH_CODE_SECRET?: string;
+
+
+  @IsString()
+  @IsNotEmpty()
+  CUSTOMER_2FA_ENCRYPTION_KEY: string;
 }
 
 /**

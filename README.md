@@ -51,6 +51,12 @@ src/
 ```
 
 Global guard order (`app.module.ts`): `JwtAuthGuard` → `PermissionsGuard`.
+Staff access tokens include a session id (`sid`). Each protected request checks
+that the session belongs to the user, has not expired, and has not been revoked.
+Revoking a session rejects its access tokens on subsequent protected requests.
+Older access tokens without `sid` are rejected; refresh or log in again to obtain
+a session-bound token. OAuth exchange codes are also bound to the login session.
+
 Every route requires a valid access token **unless** decorated with
 `@Public()`; every route additionally requires the listed `@Permissions(...)`
 if present (roles are resolved to their permissions at request time by
@@ -128,7 +134,7 @@ caller's resolved permissions to include that string.
 | POST | `/auth/register` | ✅ | Creates account (unverified), sends verification email, assigns the default `user` role |
 | GET | `/auth/verify-email?token=` | ✅ | Verifies email address |
 | POST | `/auth/login` | ✅ | Rate-limited (5/min). Returns `{ accessToken }` + sets cookies, or `{ twoFactorRequired: true }` if 2FA is enabled and no code was sent |
-| POST | `/auth/refresh` | ✅ | Reads `refresh_token` cookie + requires `X-CSRF-Token` header; rotates both, returns new `{ accessToken }` |
+| POST | `/auth/refresh` | ✅ | Reads `refresh_token` cookie + requires `X-CSRF-Token` header; reissues the refresh token and keeps the session-bound CSRF token unchanged, returns new `{ accessToken }` |
 | POST | `/auth/logout` | ❌ (bearer required) | Reads `refresh_token` cookie to identify the session, revokes it, clears both cookies |
 | GET | `/auth/google` | ✅ | Redirects to Google's consent screen |
 | GET | `/auth/google/callback` | ✅ | Sets auth cookies, mints an exchange code, redirects to `FRONTEND_URL/oauth/callback?code=...` |
@@ -211,7 +217,8 @@ enums. A permission is a `resource:action` pair (e.g. `roles:read`,
      (`failedLoginAttempts` / `lockedUntil` on `User`).
    - Every attempt (success or failure) is recorded in `login_history`.
 4. **Refresh** → `POST /auth/refresh`, cookie + CSRF header only (see
-   below). Rotates both the refresh token and CSRF token; reusing an
+   below). Reissues the refresh token and updates its stored hash; the CSRF token stays
+   unchanged for the same session. Reusing an
    already-rotated refresh token revokes the whole session (theft
    detection).
 5. **Logout** → `POST /auth/logout`, bearer token + refresh cookie.
@@ -238,6 +245,10 @@ with `/v1/auth` — so scoping it there would make it invisible to the exact
 code that needs to read it. `refresh_token` has no such requirement (JS
 never reads it), so it stays scoped to `/v1/auth` to minimize which
 requests carry it.
+
+**The CSRF token remains unchanged for the same session and secret.** Login and
+refresh resend it as a cookie; refreshing does not rotate its value. A new
+session has a different token.
 
 **No CSRF token is ever stored in the database.** `AuthController.refresh()`
 reads `refresh_token` from the cookie, verifies it, extracts the session id,
@@ -338,3 +349,46 @@ npm run seed:admin          # bootstrap an admin user
 - Helmet, scoped CORS with `credentials: true`, and `app.set('trust
   proxy', 1)` (so `secure` cookies and `req.ip` work correctly behind a
   reverse proxy/load balancer) are configured in `main.ts`.
+
+## Staff Google/GitHub login with two-factor authentication
+
+When staff 2FA is enabled, the OAuth callback creates only a five-minute challenge,
+stored as a hash in `staff_oauth_challenges`, and sets an HttpOnly `staff_oauth_2fa`
+cookie. It redirects to `/oauth/callback?twoFactorRequired=true`. No new session,
+access token, refresh token or OAuth exchange code is issued at this stage.
+The frontend displays the authenticator-code form and submits `{ code }` to
+`POST /v1/auth/2fa/verify` with cookies. This endpoint requires the configured
+frontend Origin, allows five attempts per challenge, checks the current 2FA secret,
+and atomically consumes the challenge before creating the authenticated session.
+Expired, consumed, exhausted or invalid challenges require a fresh OAuth login.
+Accounts without 2FA keep the existing OAuth code-exchange flow.
+
+Before using this change, apply migration `1790000000000-CreateStaffOAuthChallenges`
+with `npm run migration:run`, then restart the backend. Deploy the updated
+frontend OAuth callback page together with the backend.
+
+## Stripe payment confirmation and order state
+
+A verified `payment_intent.succeeded` webhook updates the payment, order and
+webhook processing marker in one PostgreSQL transaction. The handler validates
+the payment identity, order metadata, USD currency and received amount before
+accepting payment. A pending order with its first matching successful payment
+moves to `CONFIRMED`.
+
+Duplicate event deliveries are acknowledged without repeating writes. A second
+event for an already successful payment does not regress a completed or refunded
+order. A new successful charge for a cancelled/already-paid order, or a payment
+that no longer covers the current order total, moves the order to
+`PAYMENT_REQUIRES_REFUND` for review; this does not automatically refund money.
+Order cancellation and completion use conditional updates to avoid overwriting
+a concurrent payment transition. Saving the Stripe intent id after creation
+updates only that field so a fast webhook's payment status is preserved.
+
+No entity or schema changes are needed. Existing paid-but-pending orders are not
+bulk-updated; this handler applies to newly processed events. See
+[Stripe webhook delivery guidance](https://docs.stripe.com/webhooks#handle-duplicate-events).
+
+For the optional local PostgreSQL integration tests, set `RUN_PAYMENT_DB_TESTS=1`
+and run Jest with `--runInBand --runTestsByPath src/payments/stripe-webhook.integration.spec.ts`.
+These tests create and clean up only their own fixtures, without calling Stripe
+or applying migrations.

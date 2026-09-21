@@ -8,9 +8,11 @@ import {
   OneToOne,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
+  OneToMany,
 } from 'typeorm';
 
 import { Product } from '../../products/entities/product.entity';
+import { InventoryTransaction, InventoryTransactionType } from '../../invertoryTansaction/entity/InventoryTransaction.entity';
 
 // Approved MVP fields only: id, productId, quantity, minimumStock,
 // createdAt, updatedAt. Deliberately NOT adding status, isLowStock,
@@ -38,6 +40,10 @@ export class Inventory {
   })
   @JoinColumn({ name: 'productId' })
   product: Product;
+
+   @OneToMany(() => InventoryTransaction, (transaction) => transaction.inventory)
+    transactions: InventoryTransaction[];
+  
 
   // No public endpoint may set this directly (see InventoryService /
   // InventoryController) -- only the atomic Product-creation flow

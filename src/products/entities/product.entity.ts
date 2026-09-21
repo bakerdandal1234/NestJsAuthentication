@@ -8,11 +8,13 @@ import {
   OneToOne,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
+  OneToMany
 } from 'typeorm';
 
 import { Category } from '../../categories/entities/category.entity';
 import { Inventory } from '../../inventory/entities/inventory.entity';
 import { decimalTransformer } from '../../common/transformers/decimal.transformer';
+import { OrderItem } from '../../orders/entity/order-item.entity';
 
 export enum ProductStatus {
   ACTIVE = 'ACTIVE',
@@ -34,6 +36,12 @@ export class Product {
   @Column({ unique: true })
   sku: string;
 
+  @Column({
+  type: 'text',
+  nullable: true,
+  })
+  imageUrl: string | null;
+
   @Column({ type: 'numeric', precision: 10, scale: 2, transformer: decimalTransformer })
   price: number;
 
@@ -47,7 +55,7 @@ export class Product {
   })
   status: ProductStatus;
 
-  @Column()
+  @Column({type: 'uuid'})
   categoryId: string;
 
   @ManyToOne(() => Category, (category) => category.products, {
@@ -57,11 +65,11 @@ export class Product {
   @JoinColumn({ name: 'categoryId' })
   category: Category;
 
-  // Product 1 -> 1 Inventory (approved design). The FK itself lives on
-  // Inventory.productId (see Inventory entity) -- this is just the
-  // inverse side for convenient `relations: { inventory: true }` lookups
-  // from the Product side. Every Product has exactly one Inventory,
-  // created atomically alongside it (see ProductsService.create()).
+
+  @OneToMany(() => OrderItem, (item) => item.product)
+orderItems: OrderItem[];
+
+   // Inverse side; Inventory owns the productId FK.
   @OneToOne(() => Inventory, (inventory) => inventory.product)
   inventory?: Inventory;
 

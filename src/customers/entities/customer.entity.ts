@@ -3,32 +3,29 @@ import {
   CreateDateColumn,
   Entity,
   Index,
+  OneToMany,
+  OneToOne,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { Order } from '../../orders/entity/Order.entity';
+import { CustomerAccount } from '../../customer-auth/entities/customer-account.entity';
 
 @Entity('customers')
 export class Customer {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column()
-  firstName: string;
+  @Column({ type: 'varchar', nullable: true })
+  firstName: string | null;
 
-  // Indexed alone (not composite with firstName): the only supported
-  // search pattern is "look up by last name", matching actual customer
-  // service usage — no query currently needs firstName+lastName together.
-  @Column()
-  lastName: string;
+  @Column({ type: 'varchar', nullable: true })
+  lastName: string | null;
 
-  // Nullable + unique: at most one customer per email, but any number of
-  // customers may have no email at all (Postgres unique indexes treat
-  // multiple NULLs as distinct — same reasoning as User.googleId/githubId).
-  // Still the field CustomersService uses for duplicate prevention and
-  // exact-match lookup whenever it IS provided.
+
   @Index({ unique: true })
-  @Column({ nullable: true })
-  email?: string;
+  @Column()
+  email: string;
 
   // Optional, and NOT unique/indexed — no query filters or searches by
   // phone alone; a household/business can legitimately share one number.
@@ -37,14 +34,14 @@ export class Customer {
 
   // --- Address, embedded directly on Customer (no Address entity, per
   // approved design) ---
-  @Column()
-  addressLine1: string;
+  @Column({ nullable: true })
+  addressLine1?: string;
 
   @Column({ nullable: true })
   addressLine2?: string;
 
-  @Column()
-  city: string;
+  @Column({ nullable: true })
+  city?: string;
 
   // Nullable: not every country/region uses a state/province.
   @Column({ nullable: true })
@@ -54,8 +51,17 @@ export class Customer {
   @Column({ nullable: true })
   postalCode?: string;
 
-  @Column()
-  country: string;
+  @OneToMany(() => Order, (order) => order.customer)
+  orders: Order[];
+
+  // Zero-or-one login identity for this customer (Google-only login,
+  // Task A). Inverse side only — CustomerAccount owns the FK/unique
+  // constraint. See customer-account.entity.ts.
+  @OneToOne(() => CustomerAccount, (account) => account.customer)
+  account?: CustomerAccount;
+
+  @Column({ nullable: true })
+  country?: string;
 
   // Indexed: this is the ORDER BY column for paginated listing
   // (CustomersService.findAll) \u2014 keeps that sort/scan efficient as the
@@ -67,6 +73,5 @@ export class Customer {
   @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt: Date;
 
-  // No `orders` relation yet \u2014 Order doesn't exist. Will be added here
-  // (Category<->Product precedent) once the Order module is built.
+
 }
