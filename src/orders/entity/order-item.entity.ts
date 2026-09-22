@@ -11,7 +11,7 @@ import {
 
 import { Order } from '../../orders/entity/Order.entity';
 import { Product } from '../../products/entities/product.entity';
-
+import { decimalTransformer } from '../../common/transformers/decimal.transformer';
 @Entity('order_items')
 @Unique('UQ_order_items_order_product', ['orderId', 'productId'])
 @Index('IDX_order_items_order_id', ['orderId'])
@@ -50,6 +50,7 @@ export class OrderItem {
     type: 'numeric',
     precision: 10,
     scale: 2,
+    transformer: decimalTransformer
   })
   unitPrice: string;
 
@@ -57,6 +58,7 @@ export class OrderItem {
     type: 'numeric',
     precision: 10,
     scale: 2,
+    transformer: decimalTransformer
   })
   subtotal: string;
 }

@@ -63,6 +63,7 @@ export class InventoryService {
       order: { createdAt: 'DESC' },
       skip: (page - 1) * limit,
       take: limit,
+      relations: ['product']
     });
 
     return { data, total, page, limit };

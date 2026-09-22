@@ -181,6 +181,10 @@ class EnvironmentVariables {
   @IsString()
   @IsNotEmpty()
   CUSTOMER_2FA_ENCRYPTION_KEY: string;
+
+  @IsString()
+  @IsNotEmpty()
+  STAFF_2FA_ENCRYPTION_KEY: string;
 }
 
 /**

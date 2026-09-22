@@ -14,7 +14,7 @@ import { UsersModule } from '../users/users.module';
 import { MailModule } from '../mail/mail.module';
 import { SessionsModule } from '../sessions/sessions.module';
 import { AuthorizationModule } from '../authorization/authorization.module';
-
+import { StaffTwoFactorService } from './staff-two-factor.service';
 @Module({
   imports: [
     TypeOrmModule.forFeature([StaffOAuthChallenge]),
@@ -38,7 +38,7 @@ import { AuthorizationModule } from '../authorization/authorization.module';
     }),
   ],
   controllers: [AuthController],
-  providers: [StaffOAuthChallengeService, AuthService, JwtStrategy, GoogleStrategy, GithubStrategy],
+  providers: [StaffOAuthChallengeService, AuthService, JwtStrategy, GoogleStrategy, GithubStrategy,StaffTwoFactorService],
   exports: [AuthService],
 })
 export class AuthModule {}

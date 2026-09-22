@@ -8,7 +8,7 @@ import {
     OneToMany,
     PrimaryGeneratedColumn,
 } from 'typeorm';
-
+import { decimalTransformer } from '../../common/transformers/decimal.transformer';
 import { Refund } from './refund.entity';
 import { Order } from '../../orders/entity/Order.entity';
 
@@ -49,6 +49,7 @@ export class Payment {
         type: 'numeric',
         precision: 10,
         scale: 2,
+        transformer: decimalTransformer
     })
     amount: string;
 

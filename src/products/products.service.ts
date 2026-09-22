@@ -75,7 +75,7 @@ export class ProductsService {
 
   async findAll(): Promise<Product[]> {
     return this.productRepository.find({
-      order: { name: 'ASC' },
+      order: { name: 'ASC' },relations:['category']
     });
   }
 

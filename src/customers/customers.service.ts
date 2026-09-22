@@ -21,12 +21,7 @@ export class CustomersService {
   ) {}
 
   async create(dto: CreateCustomerDto): Promise<Customer> {
-    if (dto.email) {
-      const existing = await this.customerRepository.findOne({ where: { email: dto.email } });
-      if (existing) {
-        throw new ConflictException('A customer with this email already exists');
-      }
-    }
+    
 
     const customer = this.customerRepository.create(dto);
     return this.customerRepository.save(customer);

@@ -11,7 +11,7 @@ import {
 import { Payment } from '../../payments/entity/payment.entity';
 import { Customer } from '../../customers/entities/customer.entity';
 import { OrderItem } from './order-item.entity';
-
+import { decimalTransformer } from '../../common/transformers/decimal.transformer';
 export enum OrderStatus {
   PENDING = 'PENDING',
   CONFIRMED = 'CONFIRMED',
@@ -48,6 +48,7 @@ payments: Payment[];
     type: 'numeric',
     precision: 10,
     scale: 2,
+    transformer: decimalTransformer
   })
   subtotal: string;
 
@@ -55,6 +56,7 @@ payments: Payment[];
     type: 'numeric',
     precision: 10,
     scale: 2,
+    transformer: decimalTransformer
   })
   totalAmount: string;
 

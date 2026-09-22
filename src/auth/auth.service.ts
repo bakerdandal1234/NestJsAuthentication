@@ -10,8 +10,6 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
-import * as speakeasy from 'speakeasy';
-import * as qrcode from 'qrcode';
 import { UsersService } from '../users/users.service';
 import { MailService } from '../mail/mail.service';
 import { SessionService } from '../sessions/session.service';
@@ -21,6 +19,7 @@ import { CreateUserDto } from '../users/dto/create-user.dto';
 import { JwtPayload } from './strategies/jwt.strategy';
 import { AuthorizationService } from '../authorization/authorization.service';
 import { OAuthProfile } from './interfaces/oauth-profile.interface';
+import { StaffTwoFactorService } from './staff-two-factor.service';
 
 const SALT_ROUNDS = 12;
 const MAX_FAILED_ATTEMPTS = 5;
@@ -107,7 +106,8 @@ export class AuthService {
     private readonly sessionService: SessionService,
     private readonly authorizationService: AuthorizationService,
     private readonly oauthChallenges: StaffOAuthChallengeService,
-  ) {}
+    private readonly twoFactor: StaffTwoFactorService,
+  ) { }
 
   // ---------------------------------------------------------------------
   // Registration & Email verification
@@ -123,7 +123,7 @@ export class AuthService {
       emailVerificationToken,
       emailVerificationExpires: new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS),
     });
-    await this.authorizationService.assignRoleByName(user.id,'user');
+    await this.authorizationService.assignRoleByName(user.id, 'user');
     await this.mailService.sendEmailVerification(user.email, emailVerificationToken);
 
     return { message: 'Registration successful. Please check your email to verify your account.' };
@@ -196,12 +196,10 @@ export class AuthService {
         // Password was correct; caller must now submit the 2FA code.
         return { twoFactorRequired: true };
       }
-      const valid = speakeasy.totp.verify({
-        secret: user.twoFactorSecret!,
-        encoding: 'base32',
-        token: twoFactorCode,
-        window: 1,
-      });
+      const valid = this.twoFactor.verifyStoredCode(
+        user.twoFactorSecret!,
+        twoFactorCode,
+      );
       if (!valid) {
         await this.recordAttempt(user, ctx, false, 'Invalid 2FA code');
         throw new UnauthorizedException('Invalid two-factor authentication code');
@@ -267,19 +265,31 @@ export class AuthService {
     const challenge = await this.oauthChallenges.attempt(challengeToken);
     const user = await this.usersService.findById(challenge.userId);
     if (!user || !user.isTwoFactorEnabled || !user.twoFactorSecret ||
-        this.oauthChallenges.fingerprint(user.twoFactorSecret) !== challenge.secretFingerprint ||
-        (user.lockedUntil && user.lockedUntil > new Date())) {
+      this.oauthChallenges.fingerprint(user.twoFactorSecret) !== challenge.secretFingerprint ||
+      (user.lockedUntil && user.lockedUntil > new Date())) {
       throw new UnauthorizedException('Invalid or expired two-factor challenge');
     }
-    if (!/^\d{6}$/.test(code) || !speakeasy.totp.verify({
-      secret: user.twoFactorSecret, encoding: 'base32', token: code, window: 1,
-    })) {
-      await this.recordAttempt(user, ctx, false, 'Invalid OAuth two-factor code');
-      throw new UnauthorizedException('Invalid two-factor authentication code');
+    if (
+      !this.twoFactor.verifyStoredCode(
+        user.twoFactorSecret,
+        code,
+      )
+    ) {
+      await this.recordAttempt(
+        user,
+        ctx,
+        false,
+        'Invalid OAuth two-factor code',
+      );
+
+      throw new UnauthorizedException(
+        'Invalid two-factor authentication code',
+      );
     }
     await this.oauthChallenges.consume(challenge.tokenHash);
     return this.completeOAuthLogin(user, ctx);
   }
+
 
   private async completeOAuthLogin(user: User, ctx: LoginContext): Promise<LoginResult> {
 
@@ -729,109 +739,74 @@ export class AuthService {
 
 
   async changePassword(
-  userId: string,
-  currentPassword: string,
-  newPassword: string,
-): Promise<{ message: string }> {
-  const user = await this.usersService.findById(userId);
+    userId: string,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<{ message: string }> {
+    const user = await this.usersService.findById(userId);
 
-  if (!user) {
-    throw new BadRequestException('User not found');
-  }
+    if (!user) {
+      throw new BadRequestException('User not found');
+    }
 
-  if (!user.password) {
-    throw new BadRequestException(
-      'Password change is not available for this account',
+    if (!user.password) {
+      throw new BadRequestException(
+        'Password change is not available for this account',
+      );
+    }
+
+    const passwordMatches = await bcrypt.compare(
+      currentPassword,
+      user.password,
     );
+
+    if (!passwordMatches) {
+      throw new BadRequestException('Current password is incorrect');
+    }
+
+    user.password = await bcrypt.hash(newPassword, SALT_ROUNDS);
+
+    user.failedLoginAttempts = 0;
+    user.lockedUntil = undefined;
+
+    await this.usersService.save(user);
+
+    // Revoke every session so the user must authenticate again.
+    await this.sessionService.revokeAllSessions(user.id);
+
+    return {
+      message: 'Password changed successfully. Please log in again.',
+    };
   }
-
-  const passwordMatches = await bcrypt.compare(
-    currentPassword,
-    user.password,
-  );
-
-  if (!passwordMatches) {
-    throw new BadRequestException('Current password is incorrect');
-  }
-
-  user.password = await bcrypt.hash(newPassword, SALT_ROUNDS);
-
-  user.failedLoginAttempts = 0;
-  user.lockedUntil = undefined;
-
-  await this.usersService.save(user);
-
-  // Revoke every session so the user must authenticate again.
-  await this.sessionService.revokeAllSessions(user.id);
-
-  return {
-    message: 'Password changed successfully. Please log in again.',
-  };
-}
 
   // ---------------------------------------------------------------------
   // Two-factor authentication (TOTP / Google Authenticator)
   // ---------------------------------------------------------------------
 
-  async generateTwoFactorSecret(userId: string): Promise<{ qrCodeDataUrl: string; secret: string }> {
-    const user = await this.usersService.findById(userId);
-
-    const secret = speakeasy.generateSecret({
-      name: `MyApp (${user.email})`,
-    });
-
-    user.twoFactorSecret = secret.base32;
-    await this.usersService.save(user);
-
-    const qrCodeDataUrl = await qrcode.toDataURL(secret.otpauth_url!);
-    return { qrCodeDataUrl, secret: secret.base32 };
+  // 
+  generateTwoFactorSecret(
+    userId: string,
+  ): Promise<{
+    qrCodeDataUrl: string;
+    secret: string;
+  }> {
+    return this.twoFactor.generateSetup(userId);
   }
 
-  async enableTwoFactor(userId: string, code: string): Promise<{ message: string }> {
-    const user = await this.usersService.findById(userId);
 
-    if (!user.twoFactorSecret) {
-      throw new BadRequestException('Two-factor setup has not been initiated');
-    }
 
-    const valid = speakeasy.totp.verify({
-      secret: user.twoFactorSecret,
-      encoding: 'base32',
-      token: code,
-      window: 1,
-    });
-
-    if (!valid) {
-      throw new BadRequestException('Invalid two-factor authentication code');
-    }
-
-    user.isTwoFactorEnabled = true;
-    await this.usersService.save(user);
-    return { message: 'Two-factor authentication enabled' };
+  enableTwoFactor(
+    userId: string,
+    code: string,
+  ): Promise<{ message: string }> {
+    return this.twoFactor.enable(userId, code);
   }
 
-  async disableTwoFactor(userId: string, code: string): Promise<{ message: string }> {
-    const user = await this.usersService.findById(userId);
-
-    if (!user.isTwoFactorEnabled || !user.twoFactorSecret) {
-      throw new BadRequestException('Two-factor authentication is not enabled');
-    }
-
-    const valid = speakeasy.totp.verify({
-      secret: user.twoFactorSecret,
-      encoding: 'base32',
-      token: code,
-      window: 1,
-    });
-
-    if (!valid) {
-      throw new BadRequestException('Invalid two-factor authentication code');
-    }
-
-    user.isTwoFactorEnabled = false;
-    user.twoFactorSecret = undefined;
-    await this.usersService.save(user);
-    return { message: 'Two-factor authentication disabled' };
+  disableTwoFactor(
+    userId: string,
+    code: string,
+  ): Promise<{ message: string }> {
+    return this.twoFactor.disable(userId, code);
   }
 
   // ---------------------------------------------------------------------

@@ -22,6 +22,7 @@ import { InventoryModule } from './inventory/inventory.module';
 import { OrdersModule } from './orders/OrdersModule.module';
 import { PaymentsModule } from './payments/payments.module';
 import { CustomerAuthModule } from './customer-auth/customer-auth.module';
+import { InventoryTransactionsModule } from './invertoryTansaction/inventory-transactions.module';
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -52,6 +53,7 @@ import { CustomerAuthModule } from './customer-auth/customer-auth.module';
     OrdersModule,
     PaymentsModule,
     CustomerAuthModule,
+    InventoryTransactionsModule
   ],
   controllers: [AppController],
   providers: [
