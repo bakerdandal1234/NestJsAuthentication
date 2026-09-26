@@ -18,5 +18,10 @@
     "skipLibCheck": true,
     "strict": true,
     "strictPropertyInitialization": false
-  }
+  },
+   "exclude": [
+    "node_modules",
+    "dist",
+    "migration-archive"
+  ]
 }

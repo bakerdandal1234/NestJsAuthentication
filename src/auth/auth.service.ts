@@ -1,3 +1,4 @@
+import { StaffOAuthChallengeService, STAFF_OAUTH_2FA_TTL_SECONDS } from './staff-oauth-challenge.service';
 import {
   BadRequestException,
   ConflictException,
@@ -9,8 +10,6 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
-import * as speakeasy from 'speakeasy';
-import * as qrcode from 'qrcode';
 import { UsersService } from '../users/users.service';
 import { MailService } from '../mail/mail.service';
 import { SessionService } from '../sessions/session.service';
@@ -20,6 +19,7 @@ import { CreateUserDto } from '../users/dto/create-user.dto';
 import { JwtPayload } from './strategies/jwt.strategy';
 import { AuthorizationService } from '../authorization/authorization.service';
 import { OAuthProfile } from './interfaces/oauth-profile.interface';
+import { StaffTwoFactorService } from './staff-two-factor.service';
 
 const SALT_ROUNDS = 12;
 const MAX_FAILED_ATTEMPTS = 5;
@@ -105,7 +105,9 @@ export class AuthService {
     private readonly mailService: MailService,
     private readonly sessionService: SessionService,
     private readonly authorizationService: AuthorizationService,
-  ) {}
+    private readonly oauthChallenges: StaffOAuthChallengeService,
+    private readonly twoFactor: StaffTwoFactorService,
+  ) { }
 
   // ---------------------------------------------------------------------
   // Registration & Email verification
@@ -121,7 +123,7 @@ export class AuthService {
       emailVerificationToken,
       emailVerificationExpires: new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS),
     });
-    await this.authorizationService.assignRoleByName(user.id,'user');
+    await this.authorizationService.assignRoleByName(user.id, 'user');
     await this.mailService.sendEmailVerification(user.email, emailVerificationToken);
 
     return { message: 'Registration successful. Please check your email to verify your account.' };
@@ -189,22 +191,20 @@ export class AuthService {
       throw new ForbiddenException('Please verify your email address before logging in');
     }
 
-    if (user.isTwoFactorEnabled) {
-      if (!twoFactorCode) {
-        // Password was correct; caller must now submit the 2FA code.
-        return { twoFactorRequired: true };
-      }
-      const valid = speakeasy.totp.verify({
-        secret: user.twoFactorSecret!,
-        encoding: 'base32',
-        token: twoFactorCode,
-        window: 1,
-      });
-      if (!valid) {
-        await this.recordAttempt(user, ctx, false, 'Invalid 2FA code');
-        throw new UnauthorizedException('Invalid two-factor authentication code');
-      }
-    }
+    // if (user.isTwoFactorEnabled) {
+    //   if (!twoFactorCode) {
+    //     // Password was correct; caller must now submit the 2FA code.
+    //     return { twoFactorRequired: true };
+    //   }
+    //   const valid = this.twoFactor.verifyStoredCode(
+    //     user.twoFactorSecret!,
+    //     twoFactorCode,
+    //   );
+    //   if (!valid) {
+    //     await this.recordAttempt(user, ctx, false, 'Invalid 2FA code');
+    //     throw new UnauthorizedException('Invalid two-factor authentication code');
+    //   }
+    // }
 
     // Successful login: reset lockout counters and issue tokens.
     user.failedLoginAttempts = 0;
@@ -246,8 +246,52 @@ export class AuthService {
    * Session as a normal password login (Stage 3 session flow, reused
    * as-is via issueTokens()/createSession()/rotateRefreshToken()).
    */
-  async loginWithOAuth(profile: OAuthProfile, ctx: LoginContext): Promise<LoginResult> {
+  async loginWithOAuth(profile: OAuthProfile, ctx: LoginContext): Promise<LoginResult | { twoFactorRequired: true; challenge: string; expiresIn: number }> {
     const user = await this.resolveOAuthUser(profile);
+    if (user.lockedUntil && user.lockedUntil > new Date()) {
+      throw new ForbiddenException('Account temporarily locked');
+    }
+    if (user.isTwoFactorEnabled) {
+      if (!user.twoFactorSecret) {
+        throw new UnauthorizedException('Two-factor authentication is unavailable');
+      }
+      const challenge = await this.oauthChallenges.create(user.id, user.twoFactorSecret);
+      return { twoFactorRequired: true, challenge, expiresIn: STAFF_OAUTH_2FA_TTL_SECONDS };
+    }
+    return this.completeOAuthLogin(user, ctx);
+  }
+
+  async verifyOAuthTwoFactor(challengeToken: string | undefined, code: string, ctx: LoginContext): Promise<LoginResult> {
+    const challenge = await this.oauthChallenges.attempt(challengeToken);
+    const user = await this.usersService.findById(challenge.userId);
+    if (!user || !user.isTwoFactorEnabled || !user.twoFactorSecret ||
+      this.oauthChallenges.fingerprint(user.twoFactorSecret) !== challenge.secretFingerprint ||
+      (user.lockedUntil && user.lockedUntil > new Date())) {
+      throw new UnauthorizedException('Invalid or expired two-factor challenge');
+    }
+    if (
+      !this.twoFactor.verifyStoredCode(
+        user.twoFactorSecret,
+        code,
+      )
+    ) {
+      await this.recordAttempt(
+        user,
+        ctx,
+        false,
+        'Invalid OAuth two-factor code',
+      );
+
+      throw new UnauthorizedException(
+        'Invalid two-factor authentication code',
+      );
+    }
+    await this.oauthChallenges.consume(challenge.tokenHash);
+    return this.completeOAuthLogin(user, ctx);
+  }
+
+
+  private async completeOAuthLogin(user: User, ctx: LoginContext): Promise<LoginResult> {
 
     const refreshTtlMs = parseDurationMs(
       this.configService.get<string>('JWT_REFRESH_EXPIRES_IN')!,
@@ -357,13 +401,19 @@ export class AuthService {
   // ---------------------------------------------------------------------
 
   /**
-   * bcrypt only considers the first 72 bytes of its input. Our refresh JWTs
-   * share a long identical prefix across rotations of the *same* session
-   * (header + sub/email/role/sid never change — only iat/exp/signature do,
-   * and those land past byte 72), so bcrypt.compare() could not actually
-   * tell an old, already-rotated token apart from the current one. Hashing
-   * the full token with SHA-256 first collapses the *entire* string into a
-   * fixed-length digest before bcrypt ever sees it, fixing that blind spot.
+   * Deterministic digest used as the *stored* refresh-token identifier
+   * (Session.refreshTokenHash) — deliberately not bcrypt. A refresh token
+   * is already a high-entropy signed JWT, not a low-entropy human
+   * password, so bcrypt's slow salted hashing buys no real brute-force
+   * protection here, while its per-call random salt would make two hashes
+   * of the *same* token compare unequal, and its cost (SALT_ROUNDS)
+   * needlessly widened the read-compare-write window during rotation. A
+   * plain SHA-256 digest is fast and deterministic, which is exactly what
+   * lets rotateRefreshTokenIfMatches() rotate atomically via a single
+   * `UPDATE ... WHERE refreshTokenHash = :expectedHash` — the database
+   * resolves any concurrent-refresh race itself, closing the TOCTOU gap
+   * that existed when the hash was compared and rotated as two separate,
+   * unlocked steps.
    */
   private hashRefreshToken(refreshToken: string): string {
     return crypto.createHash('sha256').update(refreshToken).digest('hex');
@@ -440,30 +490,34 @@ export class AuthService {
    * narrow template-literal type, but our env values are validated at
    * startup (env.validation.ts) so a plain string is safe here. Extracted
    * out of issueTokens() so exchangeOAuthCode() can mint a fresh access
-   * token on its own, without touching sessions/refresh tokens at all.
+   * token for a validated session without rotating its refresh token.
    */
-  private async signAccessToken(user: User): Promise<string> {
-    const accessPayload: JwtPayload = { sub: user.id, email: user.email };
+  private async signAccessToken(user: User, sessionId: string): Promise<string> {
+    // jti: distinguishes tokens issued for the same session within the same
+    // second, since iat/exp alone (both second-granularity) would otherwise
+    // make two HMAC-signed tokens with identical claims byte-for-byte
+    // identical.
+    const accessPayload: JwtPayload = { sub: user.id, email: user.email, sid: sessionId, jti: crypto.randomUUID() };
     return this.jwtService.signAsync(accessPayload, {
       secret: this.configService.get<string>('JWT_ACCESS_SECRET'),
       expiresIn: this.configService.get<string>('JWT_ACCESS_EXPIRES_IN') as any,
     });
   }
 
-  private async issueTokens(user: User, sessionId?: string): Promise<SignedTokenPair> {
-    const accessToken = await this.signAccessToken(user);
+  private async issueTokens(user: User, sessionId: string): Promise<SignedTokenPair> {
+    const accessToken = await this.signAccessToken(user, sessionId);
 
-    // `sid` is only embedded when a Session exists for this token pair.
-    const refreshPayload: JwtPayload = sessionId
-      ? { sub: user.id, email: user.email, sid: sessionId }
-      : { sub: user.id, email: user.email };
+    // jti: see signAccessToken() above — matters more here, since
+    // rotateRefreshTokenIfMatches() treats the hash as the token's identity.
+    const refreshPayload: JwtPayload = { sub: user.id, email: user.email, sid: sessionId, jti: crypto.randomUUID() };
 
     const refreshToken = await this.jwtService.signAsync(refreshPayload, {
       secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
       expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRES_IN') as any,
     });
 
-    const refreshTokenHash = await bcrypt.hash(this.hashRefreshToken(refreshToken), SALT_ROUNDS);
+    // Deterministic on purpose — see hashRefreshToken()'s doc comment.
+    const refreshTokenHash = this.hashRefreshToken(refreshToken);
 
     return { accessToken, refreshToken, refreshTokenHash };
   }
@@ -483,9 +537,9 @@ export class AuthService {
    * privilege (the session + refresh cookie already exist by the time this
    * code is minted).
    */
-  async createOAuthExchangeCode(userId: string): Promise<string> {
+  async createOAuthExchangeCode(userId: string, sessionId: string): Promise<string> {
     return this.jwtService.signAsync(
-      { sub: userId, type: 'oauth_exchange' },
+      { sub: userId, sid: sessionId, type: 'oauth_exchange' },
       {
         secret: this.configService.get<string>('OAUTH_CODE_SECRET'),
         expiresIn: `${OAUTH_CODE_TTL_SECONDS}s`,
@@ -497,7 +551,7 @@ export class AuthService {
   async exchangeOAuthCode(code: string): Promise<{ accessToken: string }> {
     const invalidCodeError = () => new UnauthorizedException('Invalid or expired code');
 
-    let payload: { sub: string; type: string };
+    let payload: { sub: string; sid: string; type: string };
     try {
       payload = await this.jwtService.verifyAsync(code, {
         secret: this.configService.get<string>('OAUTH_CODE_SECRET'),
@@ -506,9 +560,12 @@ export class AuthService {
       throw invalidCodeError();
     }
 
-    if (payload.type !== 'oauth_exchange') {
+    if (payload.type !== 'oauth_exchange' || !payload.sid) {
       throw invalidCodeError();
     }
+
+    const sessionId = payload.sid;
+    await this.sessionService.requireActiveSession(sessionId, payload.sub);
 
     let user: User;
     try {
@@ -517,7 +574,7 @@ export class AuthService {
       throw invalidCodeError();
     }
 
-    const accessToken = await this.signAccessToken(user);
+    const accessToken = await this.signAccessToken(user, sessionId);
     return { accessToken };
   }
 
@@ -583,21 +640,35 @@ export class AuthService {
       throw this.invalidRefreshTokenError();
     }
 
-    // 5. Check the hash.
-    const matches = await bcrypt.compare(this.hashRefreshToken(refreshToken), session.refreshTokenHash);
-    if (!matches) {
-      // Reused or forged refresh token: revoke the session defensively.
-      await this.sessionService.revokeSession(session.id);
-      throw this.invalidRefreshTokenError();
-    }
+    // 5. Compute the presented token's deterministic hash (see
+    // hashRefreshToken()'s doc comment for why this isn't bcrypt).
+    const candidateHash = this.hashRefreshToken(refreshToken);
 
-    // 6. Rotate: issue a new pair bound to the same session.
+    // 6. Rotate: issue a new pair bound to the same session, then swap the
+    // hash atomically, conditioned on the row still holding candidateHash.
+    // This closes the race that existed when "compare" and "rotate" were two
+    // separate, unlocked steps: if two requests reach here with the same
+    // (old) token at the same time, only one UPDATE can match — the other
+    // gets back false and is treated exactly like a wrong hash.
     const user = await this.usersService.findById(session.userId);
-    const { accessToken, refreshToken: newRefreshToken, refreshTokenHash } = await this.issueTokens(
+    const { accessToken, refreshToken: newRefreshToken, refreshTokenHash: newHash } = await this.issueTokens(
       user,
       session.id,
     );
-    await this.sessionService.rotateRefreshToken(session.id, refreshTokenHash);
+
+    const rotated = await this.sessionService.rotateRefreshTokenIfMatches(
+      session.id,
+      candidateHash,
+      newHash,
+    );
+
+    if (!rotated) {
+      // Either the presented token never matched this session, or another
+      // request already rotated it first (a lost race, or a genuinely
+      // reused/forged token). Revoke defensively either way, same as before.
+      await this.sessionService.revokeSession(session.id);
+      throw this.invalidRefreshTokenError();
+    }
 
     return { accessToken, refreshToken: newRefreshToken, sessionId: session.id, userId: user.id };
   }
@@ -668,109 +739,111 @@ export class AuthService {
 
 
   async changePassword(
-  userId: string,
-  currentPassword: string,
-  newPassword: string,
-): Promise<{ message: string }> {
-  const user = await this.usersService.findById(userId);
+    userId: string,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<{ message: string }> {
+    const user = await this.usersService.findById(userId);
 
-  if (!user) {
-    throw new BadRequestException('User not found');
-  }
+    if (!user) {
+      throw new BadRequestException('User not found');
+    }
 
-  if (!user.password) {
-    throw new BadRequestException(
-      'Password change is not available for this account',
+    if (!user.password) {
+      throw new BadRequestException(
+         'Password change is not available for this account. Use "Set Password" instead.',
+      );
+    }
+
+    const passwordMatches = await bcrypt.compare(
+      currentPassword,
+      user.password,
     );
+
+    if (!passwordMatches) {
+      throw new BadRequestException('Current password is incorrect');
+    }
+
+    user.password = await bcrypt.hash(newPassword, SALT_ROUNDS);
+
+    user.failedLoginAttempts = 0;
+    user.lockedUntil = undefined;
+
+    await this.usersService.save(user);
+
+    // Revoke every session so the user must authenticate again.
+    await this.sessionService.revokeAllSessions(user.id);
+
+    return {
+      message: 'Password changed successfully. Please log in again.',
+    };
   }
 
-  const passwordMatches = await bcrypt.compare(
-    currentPassword,
-    user.password,
-  );
+  /**
+   * Lets an authenticated OAuth-only account (no local password yet) add
+   * one, so it can also be used to log in with email + password from then
+   * on. Deliberately separate from changePassword(): there is no current
+   * password to verify here, and changePassword() must keep refusing that
+   * case rather than silently accepting a missing currentPassword.
+   */
+  async setPassword(
+    userId: string,
+    newPassword: string,
+  ): Promise<{ message: string }> {
+    const user = await this.usersService.findById(userId);
 
-  if (!passwordMatches) {
-    throw new BadRequestException('Current password is incorrect');
+    if (!user) {
+      throw new BadRequestException('User not found');
+    }
+
+    if (user.password) {
+      throw new BadRequestException(
+        'This account already has a password. Use "Change Password" instead.',
+      );
+    }
+
+    user.password = await bcrypt.hash(newPassword, SALT_ROUNDS);
+
+    await this.usersService.save(user);
+
+    // Same precaution as changePassword(): once the account gains a new
+    // credential type, every existing session must re-authenticate.
+    await this.sessionService.revokeAllSessions(user.id);
+
+    return {
+      message:
+        'Password set successfully. You can now also log in with your email and password.',
+    };
   }
-
-  user.password = await bcrypt.hash(newPassword, SALT_ROUNDS);
-
-  user.failedLoginAttempts = 0;
-  user.lockedUntil = undefined;
-
-  await this.usersService.save(user);
-
-  // Revoke every session so the user must authenticate again.
-  await this.sessionService.revokeAllSessions(user.id);
-
-  return {
-    message: 'Password changed successfully. Please log in again.',
-  };
-}
 
   // ---------------------------------------------------------------------
   // Two-factor authentication (TOTP / Google Authenticator)
   // ---------------------------------------------------------------------
 
-  async generateTwoFactorSecret(userId: string): Promise<{ qrCodeDataUrl: string; secret: string }> {
-    const user = await this.usersService.findById(userId);
-
-    const secret = speakeasy.generateSecret({
-      name: `MyApp (${user.email})`,
-    });
-
-    user.twoFactorSecret = secret.base32;
-    await this.usersService.save(user);
-
-    const qrCodeDataUrl = await qrcode.toDataURL(secret.otpauth_url!);
-    return { qrCodeDataUrl, secret: secret.base32 };
+  // 
+  generateTwoFactorSecret(
+    userId: string,
+  ): Promise<{
+    qrCodeDataUrl: string;
+    secret: string;
+  }> {
+    return this.twoFactor.generateSetup(userId);
   }
 
-  async enableTwoFactor(userId: string, code: string): Promise<{ message: string }> {
-    const user = await this.usersService.findById(userId);
 
-    if (!user.twoFactorSecret) {
-      throw new BadRequestException('Two-factor setup has not been initiated');
-    }
 
-    const valid = speakeasy.totp.verify({
-      secret: user.twoFactorSecret,
-      encoding: 'base32',
-      token: code,
-      window: 1,
-    });
-
-    if (!valid) {
-      throw new BadRequestException('Invalid two-factor authentication code');
-    }
-
-    user.isTwoFactorEnabled = true;
-    await this.usersService.save(user);
-    return { message: 'Two-factor authentication enabled' };
+  enableTwoFactor(
+    userId: string,
+    code: string,
+  ): Promise<{ message: string }> {
+    return this.twoFactor.enable(userId, code);
   }
 
-  async disableTwoFactor(userId: string, code: string): Promise<{ message: string }> {
-    const user = await this.usersService.findById(userId);
-
-    if (!user.isTwoFactorEnabled || !user.twoFactorSecret) {
-      throw new BadRequestException('Two-factor authentication is not enabled');
-    }
-
-    const valid = speakeasy.totp.verify({
-      secret: user.twoFactorSecret,
-      encoding: 'base32',
-      token: code,
-      window: 1,
-    });
-
-    if (!valid) {
-      throw new BadRequestException('Invalid two-factor authentication code');
-    }
-
-    user.isTwoFactorEnabled = false;
-    user.twoFactorSecret = undefined;
-    await this.usersService.save(user);
-    return { message: 'Two-factor authentication disabled' };
+  disableTwoFactor(
+    userId: string,
+    code: string,
+  ): Promise<{ message: string }> {
+    return this.twoFactor.disable(userId, code);
   }
 
   // ---------------------------------------------------------------------

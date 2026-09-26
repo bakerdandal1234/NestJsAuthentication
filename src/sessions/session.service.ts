@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, MoreThan, Repository } from 'typeorm';
+import { isUUID } from 'class-validator';
 import { Session } from './entities/session.entity';
 
 /**
@@ -17,8 +18,7 @@ export interface CreateSessionContext {
 }
 
 /**
- * Stage 2 of Session Management: standalone service, not wired into
- * AuthService or the login/refresh/logout flows yet.
+ * Creates, validates, rotates and revokes staff authentication sessions.
  */
 @Injectable()
 export class SessionService {
@@ -26,6 +26,22 @@ export class SessionService {
     @InjectRepository(Session)
     private readonly sessionRepository: Repository<Session>,
   ) {}
+
+  async requireActiveSession(sessionId: string, userId: string): Promise<Session> {
+    if (
+      typeof sessionId !== 'string' || !isUUID(sessionId) ||
+      typeof userId !== 'string' || !isUUID(userId)
+    ) {
+      throw new UnauthorizedException('Invalid or expired session');
+    }
+    const session = await this.sessionRepository.findOne({
+      where: { id: sessionId, userId },
+    });
+    if (!session || session.revokedAt || session.expiresAt.getTime() <= Date.now()) {
+      throw new UnauthorizedException('Invalid or expired session');
+    }
+    return session;
+  }
 
   async createSession(userId: string, context: CreateSessionContext): Promise<Session> {
     const session = this.sessionRepository.create({ userId, ...context });
@@ -59,6 +75,35 @@ export class SessionService {
     session.refreshTokenHash = refreshTokenHash;
     session.lastUsedAt = new Date();
     return this.sessionRepository.save(session);
+  }
+
+  /**
+   * Atomically rotates the refresh token hash only if the row still holds
+   * `expectedHash` (and is not revoked/expired) at the moment of the
+   * UPDATE. This is a single-statement compare-and-swap: the database
+   * itself resolves the race, so two concurrent requests presenting the
+   * same not-yet-rotated token can never both succeed — only one UPDATE
+   * can match, the other affects 0 rows and gets `false` back. Requires
+   * refreshTokenHash to be a deterministic hash (see AuthService.
+   * hashRefreshToken()) since bcrypt's per-call random salt would never
+   * equality-match here.
+   */
+  async rotateRefreshTokenIfMatches(
+    sessionId: string,
+    expectedHash: string,
+    newHash: string,
+  ): Promise<boolean> {
+    const result = await this.sessionRepository
+      .createQueryBuilder()
+      .update(Session)
+      .set({ refreshTokenHash: newHash, lastUsedAt: new Date() })
+      .where('id = :sessionId', { sessionId })
+      .andWhere('"refreshTokenHash" = :expectedHash', { expectedHash })
+      .andWhere('"revokedAt" IS NULL')
+      .andWhere('"expiresAt" > :now', { now: new Date() })
+      .execute();
+
+    return (result.affected ?? 0) > 0;
   }
 
   async revokeSession(sessionId: string): Promise<void> {

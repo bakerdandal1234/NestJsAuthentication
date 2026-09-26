@@ -2,7 +2,7 @@ import { Controller, Get } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Permissions } from '../common/decorators/permissions.decorator';
-
+import { instanceToPlain } from 'class-transformer';
 /**
  * Shape JwtStrategy.validate() attaches to req.user for every authenticated
  * request — already carries the resolved roles/permissions, so GET /me/access
@@ -21,9 +21,13 @@ export class UsersController {
 
   @Get('me')
   async getProfile(@CurrentUser('id') userId: string) {
-    return this.usersService.findById(userId);
+     const user = await this.usersService.findById(userId);
+      return {
+      ...instanceToPlain(user),
+      hasPassword: !!user.password,
+    };
   }
-
+ 
   /**
    * Self-service view of the current user's own roles/permissions, built
    * from the exact same role/permission structure JwtStrategy already

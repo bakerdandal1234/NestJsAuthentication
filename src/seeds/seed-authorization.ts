@@ -40,13 +40,7 @@ const DEFAULT_PERMISSIONS = [
   { resource: 'users', action: 'read', description: "View a user's roles/permissions" },
   { resource: 'users', action: 'assign-role', description: 'Assign or remove a role on a user' },
   { resource: 'admin', action: 'ping', description: 'Access admin-only test endpoint' },
-  { resource: 'categories', action: 'read', description: 'View categories' },
-  { resource: 'categories', action: 'create', description: 'Create categories' },
-  { resource: 'categories', action: 'update', description: 'Update categories' },
-  { resource: 'categories', action: 'delete', description: 'Delete categories' },
-  { resource: 'products', action: 'read', description: 'View products' },
-  { resource: 'products', action: 'create', description: 'Create products' },
-  { resource: 'products', action: 'update', description: 'Update products (including activate/deactivate)' },
+  
 ];
 
 // Read-only resources that the 'moderator' role gets automatically.

@@ -12,12 +12,12 @@ export class UsersService {
     private readonly usersRepository: Repository<User>,
     @InjectRepository(LoginHistory)
     private readonly loginHistoryRepository: Repository<LoginHistory>,
-  ) {}
+  ) { }
 
   async create(createUserDto: Partial<User> & CreateUserDto): Promise<User> {
     const existing = await this.findByEmail(createUserDto.email);
     if (existing) {
-      throw new ConflictException('An account with this email already exists');
+      throw new ConflictException(this.accountConflictMessage(existing));
     }
     const user = this.usersRepository.create(createUserDto);
     return this.usersRepository.save(user);
@@ -51,7 +51,7 @@ export class UsersService {
   }): Promise<User> {
     const existing = await this.findByEmail(data.email);
     if (existing) {
-      throw new ConflictException('An account with this email already exists');
+      throw new ConflictException(this.accountConflictMessage(existing));
     }
     const user = this.usersRepository.create(data);
     return this.usersRepository.save(user);
@@ -59,33 +59,34 @@ export class UsersService {
 
   async findById(id: string): Promise<User> {
     const user = await this.usersRepository.findOne({ where: { id } });
+    console.log("user is ", user)
     if (!user) {
       throw new NotFoundException('User not found');
     }
     return user;
   }
-  
+
 
   async findByIdWithAuthorization(id: string): Promise<User> {
-  const user = await this.usersRepository.findOne({
-    where: { id },
-    relations: {
-      userRoles: {
-        role: {
-          rolePermissions: {
-            permission: true,
+    const user = await this.usersRepository.findOne({
+      where: { id },
+      relations: {
+        userRoles: {
+          role: {
+            rolePermissions: {
+              permission: true,
+            },
           },
         },
       },
-    },
-  });
+    });
 
-  if (!user) {
-    throw new NotFoundException('User not found');
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    return user;
   }
-
-  return user;
-}
 
   findByEmailVerificationToken(token: string): Promise<User | null> {
     return this.usersRepository.findOne({ where: { emailVerificationToken: token } });
@@ -110,5 +111,23 @@ export class UsersService {
       order: { createdAt: 'DESC' },
       take: limit,
     });
+  }
+
+
+
+  /**
+   * Tailors the "email already exists" conflict message to how the
+   * existing account was actually created, so the caller knows what to
+   * do next (log in with the linked provider, or set a local password)
+   * instead of hitting an unexplained dead end.
+   */
+  private accountConflictMessage(existing: User): string {
+    if (existing.googleId) {
+      return 'An account with this email already exists via Google sign-in. Log in with Google, or use "Forgot Password" to set a local password for this account.';
+    }
+    if (existing.githubId) {
+      return 'An account with this email already exists via GitHub sign-in. Log in with GitHub, or use "Forgot Password" to set a local password for this account.';
+    }
+    return 'An account with this email already exists.';
   }
 }

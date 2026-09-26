@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  ForbiddenException,
   Headers,
   HttpCode,
   HttpStatus,
@@ -28,7 +29,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { GoogleAuthGuard } from './guards/google-auth.guard';
 import { GithubAuthGuard } from './guards/github-auth.guard';
 import { OAuthProfile } from './interfaces/oauth-profile.interface';
-
+import { SetPasswordDto } from './dto/set-password.dto';
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -154,9 +155,26 @@ export class AuthController {
       userAgent: req.headers['user-agent'],
     });
 
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    const settings = this.authService.getAuthCookieSettings();
+    if ('twoFactorRequired' in result) {
+      this.clearAuthCookies(res);
+      res.cookie('staff_oauth_2fa', result.challenge, {
+        httpOnly: true, secure: settings.secure, sameSite: settings.sameSite,
+        domain: settings.domain, path: '/v1/auth/2fa', maxAge: result.expiresIn * 1000,
+      });
+      const frontendUrl = this.configService.get<string>('FRONTEND_URL');
+      res.redirect(`${frontendUrl}/oauth/callback?twoFactorRequired=true`);
+      return;
+    }
+    res.clearCookie('staff_oauth_2fa', {
+      httpOnly: true, secure: settings.secure, sameSite: settings.sameSite,
+      domain: settings.domain, path: '/v1/auth/2fa',
+    });
     this.setAuthCookies(res, result.refreshToken, result.sessionId);
 
-    const code = await this.authService.createOAuthExchangeCode(result.userId);
+    const code = await this.authService.createOAuthExchangeCode(result.userId, result.sessionId);
     const frontendUrl = this.configService.get<string>('FRONTEND_URL');
     res.redirect(`${frontendUrl}/oauth/callback?code=${encodeURIComponent(code)}`);
   }
@@ -207,6 +225,47 @@ changePassword(
     dto.newPassword,
   );
 }
+
+/**
+   * Lets an authenticated OAuth-only account (no local password yet) set
+   * one. Not @Public(): the global JwtAuthGuard requires a valid access
+   * token, which is what identifies whose account gets the password.
+   */
+  @Post('set-password')
+  @HttpCode(HttpStatus.OK)
+  setPassword(
+    @CurrentUser('id') userId: string,
+    @Body() dto: SetPasswordDto,
+  ) {
+    return this.authService.setPassword(userId, dto.newPassword);
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('2fa/verify')
+  @HttpCode(HttpStatus.OK)
+  async verifyOAuthTwoFactor(
+    @Body() dto: Verify2faDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const frontendOrigin = new URL(this.configService.getOrThrow<string>('FRONTEND_URL')).origin;
+    if (req.headers.origin !== frontendOrigin) {
+      throw new ForbiddenException('Invalid request origin');
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    const result = await this.authService.verifyOAuthTwoFactor(
+      req.cookies?.['staff_oauth_2fa'], dto.code,
+      { ipAddress: req.ip, userAgent: req.headers['user-agent'] },
+    );
+    const settings = this.authService.getAuthCookieSettings();
+    res.clearCookie('staff_oauth_2fa', {
+      httpOnly: true, secure: settings.secure, sameSite: settings.sameSite,
+      domain: settings.domain, path: '/v1/auth/2fa',
+    });
+    this.setAuthCookies(res, result.refreshToken, result.sessionId);
+    return { accessToken: result.accessToken };
+  }
 
   @Post('2fa/generate')
   generateTwoFactor(@CurrentUser('id') userId: string) {

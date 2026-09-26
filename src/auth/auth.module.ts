@@ -11,9 +11,13 @@ import { UsersModule } from '../users/users.module';
 import { MailModule } from '../mail/mail.module';
 import { SessionsModule } from '../sessions/sessions.module';
 import { AuthorizationModule } from '../authorization/authorization.module';
-
+import { StaffOAuthChallengeService } from './staff-oauth-challenge.service';
+import { StaffTwoFactorService } from './staff-two-factor.service';
+import { StaffOAuthChallenge } from './staff-oauth-challenge.entity';
+import { TypeOrmModule } from '@nestjs/typeorm';
 @Module({
   imports: [
+    TypeOrmModule.forFeature([StaffOAuthChallenge]),
     UsersModule,
     MailModule,
     SessionsModule,
@@ -34,7 +38,7 @@ import { AuthorizationModule } from '../authorization/authorization.module';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, GoogleStrategy, GithubStrategy],
+  providers: [AuthService, JwtStrategy, GoogleStrategy, GithubStrategy,StaffOAuthChallengeService,StaffTwoFactorService,],
   exports: [AuthService],
 })
 export class AuthModule {}

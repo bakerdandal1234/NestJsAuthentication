@@ -7,8 +7,8 @@ import { Role } from '../users/entities/role.entity';
 import { Permission } from '../users/entities/permission.entity';
 import { UserRole } from '../users/entities/user-role.entity';
 import { RolePermission } from '../users/entities/role-permission.entity';
-import { Category } from '../categories/entities/category.entity';
-import { Product } from '../products/entities/product.entity';
+import { StaffOAuthChallenge } from '../auth/staff-oauth-challenge.entity';
+
 export default registerAs('database', (): TypeOrmModuleOptions => ({
   type: 'postgres',
   host: process.env.DB_HOST,
@@ -16,7 +16,7 @@ export default registerAs('database', (): TypeOrmModuleOptions => ({
   username: process.env.DB_USERNAME,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  entities: [User, LoginHistory, Session,Role,Permission,UserRole,RolePermission,Category,Product],
+  entities: [User, LoginHistory, Session,Role,Permission,UserRole,RolePermission,StaffOAuthChallenge],
 
   // Fully migration-based now (both dev and production) — synchronize is
   // never used, to avoid drift between the schema TypeORM would infer from
