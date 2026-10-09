@@ -306,10 +306,6 @@ npm run start:dev          # dev server, watch mode
 npm run build               # nest build
 npm run lint                 # oxlint
 
-npm run test                # unit tests
-npm run test:e2e            # end-to-end tests (needs test/jest-e2e.json + a real Postgres per .env)
-npm run test:cov            # coverage
-
 npm run migration:generate  # generate a new migration from entity changes
 npm run migration:run       # apply pending migrations
 npm run migration:revert    # revert the last migration

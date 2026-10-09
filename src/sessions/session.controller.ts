@@ -1,4 +1,4 @@
-import { Controller, Get, Delete, Param, NotFoundException } from '@nestjs/common';
+import { Controller, Get, Delete, Param, ParseUUIDPipe, NotFoundException } from '@nestjs/common';
 import { SessionService } from './session.service';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Session } from './entities/session.entity';
@@ -42,7 +42,7 @@ export class SessionController {
   @Delete(':id')
   async revokeSession(
     @CurrentUser('id') userId: string,
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
   ): Promise<{ message: string }> {
     const session = await this.sessionService.findById(id);
 

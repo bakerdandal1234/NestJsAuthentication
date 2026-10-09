@@ -1,7 +1,6 @@
 import { StaffOAuthChallengeService, STAFF_OAUTH_2FA_TTL_SECONDS } from './staff-oauth-challenge.service';
 import {
   BadRequestException,
-  ConflictException,
   ForbiddenException,
   Injectable,
   UnauthorizedException,
@@ -183,7 +182,7 @@ export class AuthService {
     const passwordValid = await bcrypt.compare(password, user.password);
 
     if (!passwordValid) {
-      await this.handleFailedLogin(user, ctx);
+      await this.handleFailedLogin(user, ctx, 'Invalid password');
       throw genericError();
     }
 
@@ -191,20 +190,21 @@ export class AuthService {
       throw new ForbiddenException('Please verify your email address before logging in');
     }
 
-    // if (user.isTwoFactorEnabled) {
-    //   if (!twoFactorCode) {
-    //     // Password was correct; caller must now submit the 2FA code.
-    //     return { twoFactorRequired: true };
-    //   }
-    //   const valid = this.twoFactor.verifyStoredCode(
-    //     user.twoFactorSecret!,
-    //     twoFactorCode,
-    //   );
-    //   if (!valid) {
-    //     await this.recordAttempt(user, ctx, false, 'Invalid 2FA code');
-    //     throw new UnauthorizedException('Invalid two-factor authentication code');
-    //   }
-    // }
+    if (user.isTwoFactorEnabled) {
+      if (!user.twoFactorSecret) {
+        throw new UnauthorizedException('Two-factor authentication is unavailable');
+      }
+      if (!twoFactorCode) {
+        // Password was correct; caller must now submit the 2FA code.
+        return { twoFactorRequired: true };
+      }
+      if (!this.twoFactor.verifyStoredCode(user.twoFactorSecret, twoFactorCode)) {
+        // Counted toward lockout so a known password cannot be used to
+        // brute-force the 6-digit code.
+        await this.handleFailedLogin(user, ctx, 'Invalid 2FA code');
+        throw new UnauthorizedException('Invalid two-factor authentication code');
+      }
+    }
 
     // Successful login: reset lockout counters and issue tokens.
     user.failedLoginAttempts = 0;
@@ -319,6 +319,8 @@ export class AuthService {
    *    the provider reports that email as verified. Otherwise anyone
    *    could take over an existing local account just by typing its
    *    owner's email into an OAuth consent screen they control.
+   *  - An unverified provider email is rejected before any lookup, so it
+   *    can neither link nor create an account.
    *  - No match at all creates a brand-new, password-less user and
    *    assigns it the default 'user' role (same as register()).
    */
@@ -332,21 +334,25 @@ export class AuthService {
       return existingByProviderId;
     }
 
+    const providerLabel = profile.provider === 'google' ? 'Google' : 'GitHub';
+
     if (!profile.email) {
       throw new BadRequestException(
-        `${profile.provider === 'google' ? 'Google' : 'GitHub'} did not provide an email address for this account. Please make your email public/accessible with that provider and try again.`,
+        `${providerLabel} did not provide an email address for this account. Please make your email public/accessible with that provider and try again.`,
+      );
+    }
+
+    // Checked before any lookup so an unverified address can neither create
+    // nor link an account, and never reveals whether one already exists.
+    if (!profile.emailVerified) {
+      throw new BadRequestException(
+        `${providerLabel} reports this email address as unverified. Verify it with the provider and try again.`,
       );
     }
 
     const existingByEmail = await this.usersService.findByEmail(profile.email);
 
     if (existingByEmail) {
-      if (!profile.emailVerified) {
-        throw new ConflictException(
-          'An account with this email already exists. Log in with your password instead, or verify this email address with the provider before linking.',
-        );
-      }
-
       if (profile.provider === 'google') {
         existingByEmail.googleId = profile.providerId;
       } else {
@@ -368,7 +374,7 @@ export class AuthService {
     return newUser;
   }
 
-  private async handleFailedLogin(user: User, ctx: LoginContext): Promise<void> {
+  private async handleFailedLogin(user: User, ctx: LoginContext, failureReason: string): Promise<void> {
     user.failedLoginAttempts += 1;
 
     if (user.failedLoginAttempts >= MAX_FAILED_ATTEMPTS) {
@@ -378,7 +384,7 @@ export class AuthService {
     }
 
     await this.usersService.save(user);
-    await this.recordAttempt(user, ctx, false, 'Invalid password');
+    await this.recordAttempt(user, ctx, false, failureReason);
   }
 
   private async recordAttempt(
@@ -745,13 +751,9 @@ export class AuthService {
   ): Promise<{ message: string }> {
     const user = await this.usersService.findById(userId);
 
-    if (!user) {
-      throw new BadRequestException('User not found');
-    }
-
     if (!user.password) {
       throw new BadRequestException(
-         'Password change is not available for this account. Use "Set Password" instead.',
+        'This account has no password yet. Use "Forgot password" to create one.',
       );
     }
 
@@ -776,43 +778,6 @@ export class AuthService {
 
     return {
       message: 'Password changed successfully. Please log in again.',
-    };
-  }
-
-  /**
-   * Lets an authenticated OAuth-only account (no local password yet) add
-   * one, so it can also be used to log in with email + password from then
-   * on. Deliberately separate from changePassword(): there is no current
-   * password to verify here, and changePassword() must keep refusing that
-   * case rather than silently accepting a missing currentPassword.
-   */
-  async setPassword(
-    userId: string,
-    newPassword: string,
-  ): Promise<{ message: string }> {
-    const user = await this.usersService.findById(userId);
-
-    if (!user) {
-      throw new BadRequestException('User not found');
-    }
-
-    if (user.password) {
-      throw new BadRequestException(
-        'This account already has a password. Use "Change Password" instead.',
-      );
-    }
-
-    user.password = await bcrypt.hash(newPassword, SALT_ROUNDS);
-
-    await this.usersService.save(user);
-
-    // Same precaution as changePassword(): once the account gains a new
-    // credential type, every existing session must re-authenticate.
-    await this.sessionService.revokeAllSessions(user.id);
-
-    return {
-      message:
-        'Password set successfully. You can now also log in with your email and password.',
     };
   }
 

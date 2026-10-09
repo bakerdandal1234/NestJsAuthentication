@@ -4,6 +4,13 @@ import { ConfigService } from '@nestjs/config';
 import { Strategy, StrategyOptions, Profile } from 'passport-github2';
 import { OAuthProfile } from '../interfaces/oauth-profile.interface';
 
+/** Raw email entry from GitHub's /user/emails, present when `allRawEmails` is enabled. */
+interface GithubEmail {
+  value: string;
+  primary: boolean;
+  verified: boolean;
+}
+
 /**
  * GitHub OAuth2 strategy. Registered in AuthModule and consumed via
  * GithubAuthGuard (AuthGuard('github')) on GET /auth/github and
@@ -18,7 +25,6 @@ export class GithubStrategy extends PassportStrategy(Strategy, 'github') {
     const clientID = configService.get<string>('GITHUB_CLIENT_ID');
     const clientSecret = configService.get<string>('GITHUB_CLIENT_SECRET');
     const callbackURL = configService.get<string>('GITHUB_CALLBACK_URL');
-    console.log('CLIENT ID:', clientID);
     if (!clientID || !clientSecret || !callbackURL) {
       Logger.warn(
         'GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET / GITHUB_CALLBACK_URL are not fully set — ' +
@@ -32,6 +38,7 @@ export class GithubStrategy extends PassportStrategy(Strategy, 'github') {
       clientSecret: clientSecret || 'not-configured',
       callbackURL: callbackURL || 'http://localhost/auth/github/callback',
       scope: ['user:email'],
+      allRawEmails: true,
     } as StrategyOptions);
   }
 
@@ -40,21 +47,21 @@ export class GithubStrategy extends PassportStrategy(Strategy, 'github') {
     _refreshToken: string,
     profile: Profile,
   ): Promise<OAuthProfile> {
-    // With the `user:email` scope, passport-github2 populates `emails` from
-    // GitHub's /user/emails endpoint, which only ever lists addresses tied
-    // to the account (GitHub itself requires them to be usable there) —
-    // there is no separate "verified" flag exposed on this mapped profile,
-    // so presence here is treated as sufficiently trustworthy for linking.
-    // A user with every email set to private will have an empty array;
-    // AuthService handles that as a "missing email" OAuth error.
-    const primaryEmail = profile.emails?.[0]?.value;
+    // `allRawEmails: true` (see the constructor) keeps GitHub's `primary` and
+    // `verified` flags, which passport-github2 otherwise drops. Only a
+    // verified address may be trusted to link to an existing local account
+    // (see AuthService.resolveOAuthUser()). A user with no primary address
+    // gets no email here, which AuthService reports as a "missing email" error.
+    const primaryEmail = (profile.emails as GithubEmail[] | undefined)?.find(
+      (email) => email.primary,
+    );
     const [firstName, ...rest] = (profile.displayName ?? '').split(' ');
 
     return {
       provider: 'github',
       providerId: profile.id,
-      email: primaryEmail,
-      emailVerified: !!primaryEmail,
+      email: primaryEmail?.value,
+      emailVerified: primaryEmail?.verified === true,
       firstName: firstName || undefined,
       lastName: rest.length ? rest.join(' ') : undefined,
     };

@@ -29,7 +29,6 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { GoogleAuthGuard } from './guards/google-auth.guard';
 import { GithubAuthGuard } from './guards/github-auth.guard';
 import { OAuthProfile } from './interfaces/oauth-profile.interface';
-import { SetPasswordDto } from './dto/set-password.dto';
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -225,20 +224,6 @@ changePassword(
     dto.newPassword,
   );
 }
-
-/**
-   * Lets an authenticated OAuth-only account (no local password yet) set
-   * one. Not @Public(): the global JwtAuthGuard requires a valid access
-   * token, which is what identifies whose account gets the password.
-   */
-  @Post('set-password')
-  @HttpCode(HttpStatus.OK)
-  setPassword(
-    @CurrentUser('id') userId: string,
-    @Body() dto: SetPasswordDto,
-  ) {
-    return this.authService.setPassword(userId, dto.newPassword);
-  }
 
   @Public()
   @Throttle({ default: { limit: 5, ttl: 60_000 } })

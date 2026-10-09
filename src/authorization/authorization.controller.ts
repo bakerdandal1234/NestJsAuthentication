@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
 } from '@nestjs/common';
@@ -40,20 +41,20 @@ export class AuthorizationController {
 
   @Get('roles/:id')
   @Permissions('roles:read')
-  findRole(@Param('id') id: string) {
+  findRole(@Param('id', ParseUUIDPipe) id: string) {
     return this.authorizationService.findRoleById(id);
   }
 
   @Get('roles/:id/users')
   @Permissions('roles:read')
-  findUsersByRole(@Param('id') id: string) {
+  findUsersByRole(@Param('id', ParseUUIDPipe) id: string) {
     return this.authorizationService.findUsersByRole(id);
   }
 
   @Patch('roles/:id')
   @Permissions('roles:update')
   updateRole(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateRoleDto,
   ) {
     return this.authorizationService.updateRole(
@@ -64,7 +65,7 @@ export class AuthorizationController {
 
   @Delete('roles/:id')
   @Permissions('roles:delete')
-  deleteRole(@Param('id') id: string) {
+  deleteRole(@Param('id', ParseUUIDPipe) id: string) {
     return this.authorizationService.deleteRole(id);
   }
 
@@ -91,7 +92,7 @@ export class AuthorizationController {
   @Patch('permissions/:id')
   @Permissions('permissions:update')
   updatePermission(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdatePermissionDto,
   ) {
     return this.authorizationService.updatePermission(
@@ -103,7 +104,7 @@ export class AuthorizationController {
   @Delete('permissions/:id')
   @Permissions('permissions:delete')
   deletePermission(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.authorizationService.deletePermission(
       id,
@@ -119,8 +120,8 @@ export class AuthorizationController {
   )
   @Permissions('roles:assign-permission')
   assignPermissionToRole(
-    @Param('roleId') roleId: string,
-    @Param('permissionId') permissionId: string,
+    @Param('roleId', ParseUUIDPipe) roleId: string,
+    @Param('permissionId', ParseUUIDPipe) permissionId: string,
   ) {
     return this.authorizationService.assignPermissionToRole(
       roleId,
@@ -133,8 +134,8 @@ export class AuthorizationController {
   )
   @Permissions('roles:assign-permission')
   removePermissionFromRole(
-    @Param('roleId') roleId: string,
-    @Param('permissionId') permissionId: string,
+    @Param('roleId', ParseUUIDPipe) roleId: string,
+    @Param('permissionId', ParseUUIDPipe) permissionId: string,
   ) {
     return this.authorizationService.removePermissionFromRole(
       roleId,
@@ -151,8 +152,8 @@ export class AuthorizationController {
   )
   @Permissions('users:assign-role')
   assignRoleToUser(
-    @Param('userId') userId: string,
-    @Param('roleId') roleId: string,
+    @Param('userId', ParseUUIDPipe) userId: string,
+    @Param('roleId', ParseUUIDPipe) roleId: string,
   ) {
     return this.authorizationService.assignRoleToUser(
       userId,
@@ -165,8 +166,8 @@ export class AuthorizationController {
   )
   @Permissions('users:assign-role')
   removeRoleFromUser(
-    @Param('userId') userId: string,
-    @Param('roleId') roleId: string,
+    @Param('userId', ParseUUIDPipe) userId: string,
+    @Param('roleId', ParseUUIDPipe) roleId: string,
   ) {
     return this.authorizationService.removeRoleFromUser(
       userId,
@@ -179,7 +180,7 @@ export class AuthorizationController {
   )
   @Permissions('users:read')
   getUserAuthorization(
-    @Param('userId') userId: string,
+    @Param('userId', ParseUUIDPipe) userId: string,
   ) {
     return this.authorizationService.getUserAuthorization(
       userId,

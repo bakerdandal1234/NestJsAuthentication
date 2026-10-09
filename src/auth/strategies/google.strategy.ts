@@ -20,7 +20,6 @@ export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
     const clientID = configService.get<string>('GOOGLE_CLIENT_ID');
     const clientSecret = configService.get<string>('GOOGLE_CLIENT_SECRET');
     const callbackURL = configService.get<string>('GOOGLE_CALLBACK_URL');
-    console.log('CLIENT ID:', clientID);
     if (!clientID || !clientSecret || !callbackURL) {
       Logger.warn(
         'GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_CALLBACK_URL are not fully set — ' +
@@ -48,9 +47,9 @@ export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
       provider: 'google',
       providerId: profile.id,
       email: primaryEmail?.value,
-      // Google only ever surfaces verified addresses through this scope,
-      // and the field itself is reliably present on Google's profile.
-      emailVerified: !!primaryEmail?.value,
+      // Google reports `email_verified` per address; only a verified one may
+      // be trusted to link to an existing local account.
+      emailVerified: primaryEmail?.verified === true,
       firstName: profile.name?.givenName,
       lastName: profile.name?.familyName,
     };
