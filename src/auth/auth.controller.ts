@@ -57,10 +57,15 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const result = await this.authService.login(dto.email, dto.password, dto.twoFactorCode, {
-      ipAddress: req.ip,
-      userAgent: req.headers['user-agent'],
-    });
+    const result = await this.authService.login(
+      dto.email,
+      dto.password,
+      dto.twoFactorCode,
+      {
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'],
+      },
+    );
 
     // Password was correct but a 2FA code is still required — nothing to
     // set cookies for yet, the client must resubmit with twoFactorCode.
@@ -88,7 +93,10 @@ export class AuthController {
     @Headers('x-csrf-token') csrfToken?: string,
   ) {
     const refreshToken = req.cookies?.['refresh_token'];
-    const result = await this.authService.refreshTokens(refreshToken, csrfToken);
+    const result = await this.authService.refreshTokens(
+      refreshToken,
+      csrfToken,
+    );
 
     this.setAuthCookies(res, result.refreshToken, result.sessionId);
     return { accessToken: result.accessToken };
@@ -144,15 +152,30 @@ export class AuthController {
   @Public()
   @Post('oauth/exchange')
   @HttpCode(HttpStatus.OK)
-  exchangeOAuthCode(@Body() dto: OAuthExchangeDto) {
-    return this.authService.exchangeOAuthCode(dto.code);
+  exchangeOAuthCode(
+    @Body() dto: OAuthExchangeDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    this.assertFrontendOrigin(req);
+    res.setHeader('Cache-Control', 'no-store');
+    return this.authService.exchangeOAuthCode(
+      dto.code,
+      req.cookies?.['refresh_token'],
+    );
   }
 
-  private async handleOAuthCallback(req: Request, res: Response): Promise<void> {
-    const result = await this.authService.loginWithOAuth(req.user as OAuthProfile, {
-      ipAddress: req.ip,
-      userAgent: req.headers['user-agent'],
-    });
+  private async handleOAuthCallback(
+    req: Request,
+    res: Response,
+  ): Promise<void> {
+    const result = await this.authService.loginWithOAuth(
+      req.user as OAuthProfile,
+      {
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'],
+      },
+    );
 
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Referrer-Policy', 'no-referrer');
@@ -160,22 +183,33 @@ export class AuthController {
     if ('twoFactorRequired' in result) {
       this.clearAuthCookies(res);
       res.cookie('staff_oauth_2fa', result.challenge, {
-        httpOnly: true, secure: settings.secure, sameSite: settings.sameSite,
-        domain: settings.domain, path: '/v1/auth/2fa', maxAge: result.expiresIn * 1000,
+        httpOnly: true,
+        secure: settings.secure,
+        sameSite: settings.sameSite,
+        domain: settings.domain,
+        path: '/v1/auth/2fa',
+        maxAge: result.expiresIn * 1000,
       });
       const frontendUrl = this.configService.get<string>('FRONTEND_URL');
       res.redirect(`${frontendUrl}/oauth/callback?twoFactorRequired=true`);
       return;
     }
     res.clearCookie('staff_oauth_2fa', {
-      httpOnly: true, secure: settings.secure, sameSite: settings.sameSite,
-      domain: settings.domain, path: '/v1/auth/2fa',
+      httpOnly: true,
+      secure: settings.secure,
+      sameSite: settings.sameSite,
+      domain: settings.domain,
+      path: '/v1/auth/2fa',
     });
+    const code = await this.authService.createOAuthExchangeCode(
+      result.userId,
+      result.sessionId,
+    );
     this.setAuthCookies(res, result.refreshToken, result.sessionId);
-
-    const code = await this.authService.createOAuthExchangeCode(result.userId, result.sessionId);
     const frontendUrl = this.configService.get<string>('FRONTEND_URL');
-    res.redirect(`${frontendUrl}/oauth/callback?code=${encodeURIComponent(code)}`);
+    res.redirect(
+      `${frontendUrl}/oauth/callback?code=${encodeURIComponent(code)}`,
+    );
   }
 
   /**
@@ -213,17 +247,17 @@ export class AuthController {
   }
 
   @Post('change-password')
-@HttpCode(HttpStatus.OK)
-changePassword(
-  @CurrentUser('id') userId: string,
-  @Body() dto: ChangePasswordDto,
-) {
-  return this.authService.changePassword(
-    userId,
-    dto.currentPassword,
-    dto.newPassword,
-  );
-}
+  @HttpCode(HttpStatus.OK)
+  changePassword(
+    @CurrentUser('id') userId: string,
+    @Body() dto: ChangePasswordDto,
+  ) {
+    return this.authService.changePassword(
+      userId,
+      dto.currentPassword,
+      dto.newPassword,
+    );
+  }
 
   @Public()
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
@@ -234,19 +268,20 @@ changePassword(
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const frontendOrigin = new URL(this.configService.getOrThrow<string>('FRONTEND_URL')).origin;
-    if (req.headers.origin !== frontendOrigin) {
-      throw new ForbiddenException('Invalid request origin');
-    }
+    this.assertFrontendOrigin(req);
     res.setHeader('Cache-Control', 'no-store');
     const result = await this.authService.verifyOAuthTwoFactor(
-      req.cookies?.['staff_oauth_2fa'], dto.code,
+      req.cookies?.['staff_oauth_2fa'],
+      dto.code,
       { ipAddress: req.ip, userAgent: req.headers['user-agent'] },
     );
     const settings = this.authService.getAuthCookieSettings();
     res.clearCookie('staff_oauth_2fa', {
-      httpOnly: true, secure: settings.secure, sameSite: settings.sameSite,
-      domain: settings.domain, path: '/v1/auth/2fa',
+      httpOnly: true,
+      secure: settings.secure,
+      sameSite: settings.sameSite,
+      domain: settings.domain,
+      path: '/v1/auth/2fa',
     });
     this.setAuthCookies(res, result.refreshToken, result.sessionId);
     return { accessToken: result.accessToken };
@@ -258,13 +293,25 @@ changePassword(
   }
 
   @Post('2fa/enable')
-  enableTwoFactor(@CurrentUser('id') userId: string, @Body() dto: Verify2faDto) {
-    return this.authService.enableTwoFactor(userId, dto.code);
+  async enableTwoFactor(
+    @CurrentUser('id') userId: string,
+    @Body() dto: Verify2faDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const enabled = await this.authService.enableTwoFactor(userId, dto.code);
+    this.clearAuthCookies(res);
+    return enabled;
   }
 
   @Post('2fa/disable')
-  disableTwoFactor(@CurrentUser('id') userId: string, @Body() dto: Verify2faDto) {
-    return this.authService.disableTwoFactor(userId, dto.code);
+  async disableTwoFactor(
+    @CurrentUser('id') userId: string,
+    @Body() dto: Verify2faDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const disabled = await this.authService.disableTwoFactor(userId, dto.code);
+    this.clearAuthCookies(res);
+    return disabled;
   }
 
   @Get('login-history')
@@ -275,6 +322,15 @@ changePassword(
   // -----------------------------------------------------------------
   // Cookie helpers
   // -----------------------------------------------------------------
+
+  private assertFrontendOrigin(req: Request): void {
+    const frontendOrigin = new URL(
+      this.configService.getOrThrow<string>('FRONTEND_URL'),
+    ).origin;
+    if (req.headers.origin !== frontendOrigin) {
+      throw new ForbiddenException('Invalid request origin');
+    }
+  }
 
   /**
    * Issues both auth cookies together: `refresh_token` (httpOnly, scoped to
@@ -288,7 +344,11 @@ changePassword(
    * Both still share the same expiry/sameSite/secure/domain settings from
    * AuthService.getAuthCookieSettings().
    */
-  private setAuthCookies(res: Response, refreshToken: string, sessionId: string): void {
+  private setAuthCookies(
+    res: Response,
+    refreshToken: string,
+    sessionId: string,
+  ): void {
     const settings = this.authService.getAuthCookieSettings();
     const csrfToken = this.authService.computeCsrfToken(sessionId);
 
@@ -299,8 +359,16 @@ changePassword(
       domain: settings.domain,
     };
 
-    res.cookie('refresh_token', refreshToken, { ...shared, path: settings.path, httpOnly: true });
-    res.cookie('csrf_token', csrfToken, { ...shared, path: '/', httpOnly: false });
+    res.cookie('refresh_token', refreshToken, {
+      ...shared,
+      path: settings.path,
+      httpOnly: true,
+    });
+    res.cookie('csrf_token', csrfToken, {
+      ...shared,
+      path: '/',
+      httpOnly: false,
+    });
   }
 
   /** Clears both auth cookies on logout. Options (including path) must match what set them for browsers to honor the clear. */
@@ -312,7 +380,11 @@ changePassword(
       domain: settings.domain,
     };
 
-    res.clearCookie('refresh_token', { ...shared, path: settings.path, httpOnly: true });
+    res.clearCookie('refresh_token', {
+      ...shared,
+      path: settings.path,
+      httpOnly: true,
+    });
     res.clearCookie('csrf_token', { ...shared, path: '/', httpOnly: false });
   }
 }

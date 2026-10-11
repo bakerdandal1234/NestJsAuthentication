@@ -1,38 +1,25 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ConfigService } from '@nestjs/config';
 import { Strategy, StrategyOptions, Profile } from 'passport-google-oauth20';
 import { OAuthProfile } from '../interfaces/oauth-profile.interface';
+import { OAuthStateService } from '../oauth-state.service';
+import { oauthProviderId } from '../oauth-provider-id';
 
 /**
  * Google OAuth2 strategy. Registered in AuthModule and consumed via
  * GoogleAuthGuard (AuthGuard('google')) on GET /auth/google and
  * /auth/google/callback.
- *
- * If GOOGLE_CLIENT_ID/SECRET/CALLBACK_URL are not configured, this still
- * constructs (with placeholder values) so the rest of the app keeps
- * booting normally — hitting /auth/google would then fail with a clear
- * Google-side "invalid client" error rather than crashing Nest at startup.
  */
 @Injectable()
 export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
-  constructor(configService: ConfigService) {
-    const clientID = configService.get<string>('GOOGLE_CLIENT_ID');
-    const clientSecret = configService.get<string>('GOOGLE_CLIENT_SECRET');
-    const callbackURL = configService.get<string>('GOOGLE_CALLBACK_URL');
-    if (!clientID || !clientSecret || !callbackURL) {
-      Logger.warn(
-        'GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_CALLBACK_URL are not fully set — ' +
-          '/auth/google will not work until they are configured in .env.',
-        GoogleStrategy.name,
-      );
-    }
-
+  constructor(configService: ConfigService, oauthState: OAuthStateService) {
     super({
-      clientID: clientID || 'not-configured',
-      clientSecret: clientSecret || 'not-configured',
-      callbackURL: callbackURL || 'http://localhost/auth/google/callback',
+      clientID: configService.getOrThrow<string>('GOOGLE_CLIENT_ID'),
+      clientSecret: configService.getOrThrow<string>('GOOGLE_CLIENT_SECRET'),
+      callbackURL: configService.getOrThrow<string>('GOOGLE_CALLBACK_URL'),
       scope: ['email', 'profile'],
+      store: oauthState.forProvider('google'),
     } as StrategyOptions);
   }
 
@@ -45,7 +32,7 @@ export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
 
     return {
       provider: 'google',
-      providerId: profile.id,
+      providerId: oauthProviderId(profile.id),
       email: primaryEmail?.value,
       // Google reports `email_verified` per address; only a verified one may
       // be trusted to link to an existing local account.

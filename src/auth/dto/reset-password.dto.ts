@@ -1,4 +1,5 @@
-import { IsString, MinLength, MaxLength, Matches } from 'class-validator';
+import { IsString, MinLength, Matches } from 'class-validator';
+import { MaxBcryptBytes } from '../password-limits';
 
 export class ResetPasswordDto {
   @IsString()
@@ -6,7 +7,7 @@ export class ResetPasswordDto {
 
   @IsString()
   @MinLength(8)
-  @MaxLength(128)
+  @MaxBcryptBytes()
   @Matches(/((?=.*\d)|(?=.*\W+))(?![.\n])(?=.*[A-Z])(?=.*[a-z]).*$/, {
     message:
       'Password must contain at least one uppercase letter, one lowercase letter, and one number or special character',

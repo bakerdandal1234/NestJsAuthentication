@@ -33,6 +33,12 @@ export class Session {
   @Column()
   refreshTokenHash: string;
 
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  oauthExchangeCodeHash?: string;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  oauthExchangeCodeExpiresAt?: Date;
+
   @Column({ nullable: true })
   userAgent?: string;
 

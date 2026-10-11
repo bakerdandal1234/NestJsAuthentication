@@ -24,9 +24,11 @@ TOTP 2FA, and a full RBAC (roles/permissions) system.
 
 ```
 src/
-  auth/            AuthController, AuthService — register, login, refresh,
-                    logout, OAuth callbacks + exchange, 2FA, password reset,
-                    email verification, login history. Passport strategies
+  auth/            AuthController, AuthService — registration, password/OAuth
+                    login, 2FA, password reset, email verification and history.
+                    AuthSessionService — token signing, refresh rotation,
+                    logout, OAuth exchange codes and session cookie/CSRF policy.
+                    Passport strategies
                     (jwt, google, github) live in auth/strategies/.
   users/            UsersController (GET /users/me, /users/me/access),
                     UsersService, and the RBAC entities (User, Role,
@@ -58,8 +60,8 @@ if present (roles are resolved to their permissions at request time by
 
 > **Note on `CsrfGuard`**: `src/common/guards/csrf.guard.ts` exists but is
 > **not used anywhere**. It implements an older double-submit-cookie design
-> that was superseded by the storage-free HMAC approach in `AuthService`
-> (`computeCsrfToken()`, checked inline inside `refreshTokens()`). Safe to
+> that was superseded by the storage-free HMAC approach in `AuthSessionService`
+> (exposed through `AuthService.computeCsrfToken()` and checked before refresh). Safe to
 > delete if nothing adopts it; left in place for now.
 
 ## Getting started
@@ -123,43 +125,43 @@ caller's resolved permissions to include that string.
 
 ### Auth (`/v1/auth`)
 
-| Method | Route | Public | Notes |
-|---|---|---|---|
-| POST | `/auth/register` | ✅ | Creates account (unverified), sends verification email, assigns the default `user` role |
-| GET | `/auth/verify-email?token=` | ✅ | Verifies email address |
-| POST | `/auth/login` | ✅ | Rate-limited (5/min). Returns `{ accessToken }` + sets cookies, or `{ twoFactorRequired: true }` if 2FA is enabled and no code was sent |
-| POST | `/auth/refresh` | ✅ | Reads `refresh_token` cookie + requires `X-CSRF-Token` header; rotates both, returns new `{ accessToken }` |
-| POST | `/auth/logout` | ❌ (bearer required) | Reads `refresh_token` cookie to identify the session, revokes it, clears both cookies |
-| GET | `/auth/google` | ✅ | Redirects to Google's consent screen |
-| GET | `/auth/google/callback` | ✅ | Sets auth cookies, mints an exchange code, redirects to `FRONTEND_URL/oauth/callback?code=...` |
-| GET | `/auth/github` | ✅ | Redirects to GitHub's consent screen |
-| GET | `/auth/github/callback` | ✅ | Same as Google callback |
-| POST | `/auth/oauth/exchange` | ✅ | Body `{ code }` → `{ accessToken }`. Redeems the one-time code from an OAuth callback; relies on the refresh cookie already set by the callback |
-| POST | `/auth/forgot-password` | ✅ | Rate-limited (3/min). Always returns the same generic message, whether or not the email exists |
-| POST | `/auth/reset-password` | ✅ | Body `{ token, newPassword }`; revokes **all** existing sessions for that user on success |
-| POST | `/auth/2fa/generate` | ❌ | Returns TOTP secret + QR code data URL |
-| POST | `/auth/2fa/enable` | ❌ | Body `{ code }`; confirms the TOTP code and turns 2FA on |
-| POST | `/auth/2fa/disable` | ❌ | Body `{ code }`; requires a valid current TOTP code |
-| GET | `/auth/login-history` | ❌ | Recent login attempts (success/failure, IP, user agent) for the current user |
+| Method | Route                       | Public               | Notes                                                                                                                                           |
+| ------ | --------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/auth/register`            | ✅                   | Creates account (unverified), sends verification email, assigns the default `user` role                                                         |
+| GET    | `/auth/verify-email?token=` | ✅                   | Verifies email address                                                                                                                          |
+| POST   | `/auth/login`               | ✅                   | Rate-limited (5/min). Returns `{ accessToken }` + sets cookies, or `{ twoFactorRequired: true }` if 2FA is enabled and no code was sent         |
+| POST   | `/auth/refresh`             | ✅                   | Reads `refresh_token` cookie + requires `X-CSRF-Token` header; rotates both, returns new `{ accessToken }`                                      |
+| POST   | `/auth/logout`              | ❌ (bearer required) | Reads `refresh_token` cookie to identify the session, revokes it, clears both cookies                                                           |
+| GET    | `/auth/google`              | ✅                   | Redirects to Google's consent screen                                                                                                            |
+| GET    | `/auth/google/callback`     | ✅                   | Sets auth cookies, mints an exchange code, redirects to `FRONTEND_URL/oauth/callback?code=...`                                                  |
+| GET    | `/auth/github`              | ✅                   | Redirects to GitHub's consent screen                                                                                                            |
+| GET    | `/auth/github/callback`     | ✅                   | Same as Google callback                                                                                                                         |
+| POST   | `/auth/oauth/exchange`      | ✅                   | Body `{ code }` → `{ accessToken }`. Redeems the one-time code from an OAuth callback; relies on the refresh cookie already set by the callback |
+| POST   | `/auth/forgot-password`     | ✅                   | Rate-limited (3/min). Always returns the same generic message, whether or not the email exists                                                  |
+| POST   | `/auth/reset-password`      | ✅                   | Body `{ token, newPassword }`; revokes **all** existing sessions for that user on success                                                       |
+| POST   | `/auth/2fa/generate`        | ❌                   | Returns TOTP secret + QR code data URL                                                                                                          |
+| POST   | `/auth/2fa/enable`          | ❌                   | Body `{ code }`; confirms the TOTP code, turns 2FA on and revokes all sessions; sign in again                                                   |
+| POST   | `/auth/2fa/disable`         | ❌                   | Body `{ code }`; requires a valid current TOTP code and revokes all sessions; sign in again                                                     |
+| GET    | `/auth/login-history`       | ❌                   | Recent login attempts (success/failure, IP, user agent) for the current user                                                                    |
 
 ### Users (`/v1/users`)
 
-| Method | Route | Public | Notes |
-|---|---|---|---|
-| GET | `/users/me` | ❌ | Current user's profile (sensitive fields stripped by `ClassSerializerInterceptor` + `@Exclude()` on the entity) |
-| GET | `/users/me/access` | ❌ | `{ userId, roles, permissions }` for the current user — built from the same data `JwtStrategy` already resolves per request |
-| GET | `/users/admin/ping` | Permission: `admin:ping` | Example RBAC-protected route |
+| Method | Route               | Public                   | Notes                                                                                                                       |
+| ------ | ------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/users/me`         | ❌                       | Current user's profile (sensitive fields stripped by `ClassSerializerInterceptor` + `@Exclude()` on the entity)             |
+| GET    | `/users/me/access`  | ❌                       | `{ userId, roles, permissions }` for the current user — built from the same data `JwtStrategy` already resolves per request |
+| GET    | `/users/admin/ping` | Permission: `admin:ping` | Example RBAC-protected route                                                                                                |
 
 ### Sessions (`/v1/sessions`)
 
 A "session" = one refresh-token lineage (one login, one OAuth login, or one
 device). Every route here is scoped to the caller's own sessions only.
 
-| Method | Route | Notes |
-|---|---|---|
-| GET | `/sessions` | Lists the current user's sessions (`id`, `userAgent`, `ipAddress`, `createdAt`, `lastUsedAt`, `expiresAt`, `revokedAt` — never the refresh token hash) |
-| DELETE | `/sessions/:id` | Revokes one session; returns 404 (not 403) if it belongs to someone else |
-| DELETE | `/sessions` | Revokes **all** of the current user's sessions |
+| Method | Route           | Notes                                                                                                                                                  |
+| ------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| GET    | `/sessions`     | Lists the current user's sessions (`id`, `userAgent`, `ipAddress`, `createdAt`, `lastUsedAt`, `expiresAt`, `revokedAt` — never the refresh token hash) |
+| DELETE | `/sessions/:id` | Revokes one session; returns 404 (not 403) if it belongs to someone else                                                                               |
+| DELETE | `/sessions`     | Revokes **all** of the current user's sessions                                                                                                         |
 
 ### Authorization / RBAC (`/v1/authorization`)
 
@@ -167,30 +169,30 @@ Fully dynamic — roles and permissions are database rows, not hardcoded
 enums. A permission is a `resource:action` pair (e.g. `roles:read`,
 `users:assign-role`). Every route below requires the listed permission.
 
-| Method | Route | Permission |
-|---|---|---|
-| GET | `/authorization/roles` | `roles:read` |
-| POST | `/authorization/roles` | `roles:create` |
-| GET | `/authorization/roles/:id` | `roles:read` |
-| GET | `/authorization/roles/:id/users` | `roles:read` |
-| PATCH | `/authorization/roles/:id` | `roles:update` |
-| DELETE | `/authorization/roles/:id` | `roles:delete` |
-| GET | `/authorization/permissions` | `permissions:read` |
-| POST | `/authorization/permissions` | `permissions:create` |
-| PATCH | `/authorization/permissions/:id` | `permissions:update` |
-| DELETE | `/authorization/permissions/:id` | `permissions:delete` |
-| POST | `/authorization/roles/:roleId/permissions/:permissionId` | `roles:assign-permission` |
-| DELETE | `/authorization/roles/:roleId/permissions/:permissionId` | `roles:assign-permission` |
-| POST | `/authorization/users/:userId/roles/:roleId` | `users:assign-role` |
-| DELETE | `/authorization/users/:userId/roles/:roleId` | `users:assign-role` |
-| GET | `/authorization/users/:userId/access` | `users:read` — admin-facing equivalent of `GET /users/me/access` for an arbitrary user |
-| GET | `/authorization/users` | `roles:read` — full user list for an admin dashboard |
+| Method | Route                                                    | Permission                                                                             |
+| ------ | -------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| GET    | `/authorization/roles`                                   | `roles:read`                                                                           |
+| POST   | `/authorization/roles`                                   | `roles:create`                                                                         |
+| GET    | `/authorization/roles/:id`                               | `roles:read`                                                                           |
+| GET    | `/authorization/roles/:id/users`                         | `roles:read`                                                                           |
+| PATCH  | `/authorization/roles/:id`                               | `roles:update`                                                                         |
+| DELETE | `/authorization/roles/:id`                               | `roles:delete`                                                                         |
+| GET    | `/authorization/permissions`                             | `permissions:read`                                                                     |
+| POST   | `/authorization/permissions`                             | `permissions:create`                                                                   |
+| PATCH  | `/authorization/permissions/:id`                         | `permissions:update`                                                                   |
+| DELETE | `/authorization/permissions/:id`                         | `permissions:delete`                                                                   |
+| POST   | `/authorization/roles/:roleId/permissions/:permissionId` | `roles:assign-permission`                                                              |
+| DELETE | `/authorization/roles/:roleId/permissions/:permissionId` | `roles:assign-permission`                                                              |
+| POST   | `/authorization/users/:userId/roles/:roleId`             | `users:assign-role`                                                                    |
+| DELETE | `/authorization/users/:userId/roles/:roleId`             | `users:assign-role`                                                                    |
+| GET    | `/authorization/users/:userId/access`                    | `users:read` — admin-facing equivalent of `GET /users/me/access` for an arbitrary user |
+| GET    | `/authorization/users`                                   | `roles:read` — full user list for an admin dashboard                                   |
 
 ### Health
 
-| Method | Route | Public |
-|---|---|---|
-| GET | `/health` | ✅ |
+| Method | Route     | Public |
+| ------ | --------- | ------ |
+| GET    | `/health` | ✅     |
 
 ## Authentication flow explained
 
@@ -224,13 +226,13 @@ with `SameSite`/`Secure`/`Domain` driven by `COOKIE_SAME_SITE` /
 `COOKIE_DOMAIN` (see `AuthService.getAuthCookieSettings()`). Their `Path`
 deliberately differs between the two:
 
-| Cookie | `httpOnly` | `Path` | Purpose |
-|---|---|---|---|
-| `refresh_token` | ✅ | `/v1/auth` | The actual refresh JWT. Never readable by frontend JS, so it only needs to reach auth endpoints. |
-| `csrf_token` | ❌ | `/` | `HMAC-SHA256(sessionId, CSRF_SECRET)`. Readable by frontend JS so it can be echoed back. |
+| Cookie          | `httpOnly` | `Path`     | Purpose                                                                                          |
+| --------------- | ---------- | ---------- | ------------------------------------------------------------------------------------------------ |
+| `refresh_token` | ✅         | `/v1/auth` | The actual refresh JWT. Never readable by frontend JS, so it only needs to reach auth endpoints. |
+| `csrf_token`    | ❌         | `/`        | `HMAC-SHA256(sessionId, CSRF_SECRET)`. Readable by frontend JS so it can be echoed back.         |
 
 **Why `csrf_token` is `Path=/` and not `/v1/auth`:** cookie `Path` doesn't
-just control which *requests* carry a cookie — it also controls which pages
+just control which _requests_ carry a cookie — it also controls which pages
 can read it via `document.cookie` (only pages whose URL starts with that
 Path can see it). `csrf_token`'s entire purpose is to be read by frontend JS
 running on the SPA's own pages (`/`, `/login`, etc.), none of which start
@@ -248,6 +250,7 @@ malicious site can trigger the cookie-bearing request but cannot read
 `csrf_token` to put it in the header (Same-Origin Policy).
 
 Frontend usage:
+
 ```js
 // after login, cookies are already set by the server
 const csrfToken = document.cookie.match(/csrf_token=([^;]+)/)?.[1];
@@ -274,6 +277,21 @@ the bearer access-token requirement instead.
 3. Frontend calls `POST /v1/auth/oauth/exchange` with `{ code }` to get the
    real `{ accessToken }`. The refresh cookie is already in place from step 2.
 
+Both strategies reject a missing, null, empty, blank or incorrectly typed user
+identifier with HTTP 400 before any account lookup or authentication cookie is
+issued. Google IDs remain opaque strings. GitHub's original profile ID is
+validated before string conversion, so missing IDs cannot become the literal
+strings `undefined` or `null`; numeric IDs must be safe positive integers.
+
+Verified email may link a provider only when that provider's field is empty or
+already contains the same identity. A different identity from the same provider
+cannot replace the existing link and receives HTTP 409. The comparison happens
+in the database update, so two simultaneous callbacks with different identities
+allow only one link. Google and GitHub can both be linked to the same account;
+linking one preserves the other. An existing provider ID continues to identify
+its original account even if the provider's email changes. A uniqueness conflict
+while linking is also reported as 409; other database failures remain server errors.
+
 ## 2FA (TOTP)
 
 `POST /auth/2fa/generate` → `POST /auth/2fa/enable` (confirms a code from
@@ -281,25 +299,132 @@ an authenticator app) → `isTwoFactorEnabled = true`. From then on, `login`
 requires a valid `twoFactorCode` alongside the password. `POST
 /auth/2fa/disable` requires a currently-valid code to turn it back off.
 
+TOTP codes can be used only once per account across activation, password login,
+OAuth verification and deactivation, as required by
+[RFC 6238](https://www.rfc-editor.org/rfc/rfc6238.html#section-5.2).
+`User.twoFactorLastUsedStep` stores the last accepted 30-second step and is
+excluded from API responses. Only a newer step in the existing ±1-step window
+can be consumed. Consumption commits with the session and success audit, or
+with the 2FA setting and session revocation; database or signing failures leave
+the code available for retry. Expiry is rechecked against the current database
+time after lock waits. After enabling 2FA, wait for the next authenticator code
+before signing in. Disabling or replacing the secret resets the stored step.
+Generate and apply a migration for the new nullable integer column before
+running the updated application against an existing database; no migration
+file is generated by this change.
+
+Enabling or disabling 2FA revokes every existing session for that user, including
+the current one, in the same transaction as the setting change. The response
+clears the current browser's authentication cookies. Sign in again afterward;
+enabling requires the authenticator code on the new login. Other users' sessions
+and previously recorded revocation times are preserved. If session revocation
+fails, the setting change rolls back and existing sessions remain usable.
+
 ## Environment variables
 
-| Variable | Required | Notes |
-|---|---|---|
-| `NODE_ENV` | ✅ | affects cookie `secure`/`sameSite` defaults and SSL |
-| `PORT` | ✅ | |
-| `FRONTEND_URL` | ✅ | used for CORS origin and OAuth redirect target |
-| `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_NAME` | ✅ | |
-| `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` | ✅ | |
-| `JWT_ACCESS_EXPIRES_IN`, `JWT_REFRESH_EXPIRES_IN` | ✅ | e.g. `15m`, `7d` |
-| `MAIL_HOST`, `MAIL_PORT`, `MAIL_USER`, `MAIL_PASSWORD`, `MAIL_FROM` | ✅ | |
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_CALLBACK_URL` | ✅ | |
-| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_CALLBACK_URL` | ✅ | |
-| `COOKIE_SAME_SITE` | optional | `lax` \| `strict` \| `none`; defaults to `none` in production, `lax` otherwise |
-| `COOKIE_DOMAIN` | optional | only for cross-subdomain deployments |
-| `CSRF_SECRET` | ✅ | HMAC key for the storage-free CSRF token |
-| `OAUTH_CODE_SECRET` | ✅ | signing key for the short-lived OAuth exchange code |
+| Variable                                                            | Required | Notes                                                                                   |
+| ------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------- |
+| `NODE_ENV`                                                          | ✅       | affects cookie `secure`/`sameSite` defaults and SSL                                     |
+| `PORT`                                                              | ✅       |                                                                                         |
+| `FRONTEND_URL`                                                      | ✅       | used for CORS origin and OAuth redirect target                                          |
+| `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_NAME`       | ✅       |                                                                                         |
+| `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`                           | ✅       | distinct random secrets, at least 32 characters                                         |
+| `JWT_ACCESS_EXPIRES_IN`, `JWT_REFRESH_EXPIRES_IN`                   | ✅       | integer + `ms`, `s`, `m`, `h` or `d`; at least 1 second, e.g. `15m`, `7d`               |
+| `MAIL_HOST`, `MAIL_PORT`, `MAIL_USER`, `MAIL_PASSWORD`, `MAIL_FROM` | ✅       |                                                                                         |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_CALLBACK_URL`   | ✅       |                                                                                         |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_CALLBACK_URL`   | ✅       |                                                                                         |
+| `COOKIE_SAME_SITE`                                                  | optional | `lax` \| `strict` \| `none`; defaults to `none` in production, `lax` otherwise          |
+| `COOKIE_DOMAIN`                                                     | optional | only for cross-subdomain deployments                                                    |
+| `CSRF_SECRET`                                                       | ✅       | distinct random HMAC key, at least 32 characters                                        |
+| `OAUTH_CODE_SECRET`                                                 | ✅       | distinct random signing key, at least 32 characters                                     |
+| `STAFF_2FA_ENCRYPTION_KEY`                                          | ✅       | exactly 32 bytes in canonical Base64; keep stable to decrypt existing secrets           |
+| `DB_SSL_CA`                                                         | optional | PEM certificate for a private database CA; production otherwise uses system trust roots |
+
+`FRONTEND_URL` must be an origin without a path, query, credentials or fragment.
+A trailing slash is normalized. The frontend and both OAuth callback URLs must
+use HTTPS in production. OAuth credentials are required at startup; strategies
+no longer substitute placeholder values. Database and mail ports must be 1–65535.
+
+Both the application and TypeORM CLI use the same database settings. Production
+requires TLS with certificate verification; plaintext fallback and
+`rejectUnauthorized: false` are not supported. A database using a private CA
+needs `DB_SSL_CA`, with a certificate whose hostname matches `DB_HOST`.
 
 ## Scripts
+
+Run `npm test` for all authentication integration tests, or
+`npm run test:oauth` for OAuth only or `npm run test:security` for email verification,
+password changes, lockout concurrency and failure handling. `npm run test:expiry`
+covers expiry during real row-lock waits, concurrent consumers and rollback.
+PostgreSQL tools
+`initdb` and `pg_ctl` must be available on `PATH`. The tests start a disposable
+PostgreSQL cluster bound to `127.0.0.1` on an available port, then stop and remove
+it. They do not read `.env` or connect to the application's database. Coverage
+includes token reuse, concurrent resets, expiry, replacement and rollback when
+session revocation fails. OAuth tests run the real Nest controllers, guards,
+Passport strategies and services against PostgreSQL. Only provider HTTP
+endpoints are replaced with a local fixture: these tests do not sign in to
+real Google or GitHub accounts. Coverage includes browser/provider-bound
+state, expiry, replay, concurrent callbacks and exchanges, verified-email
+linking, 2FA, refresh, logout and protected requests.
+
+Security tests also cover concurrent password changes, stale login credentials,
+atomic session/audit persistence and rollback on database failures. SMTP errors
+are simulated at the transport boundary; automated tests never send real emails.
+MailService logs and propagates delivery failures. Forgot-password deliberately
+keeps the same response during SMTP failure to avoid revealing registered emails;
+its message asks the user to check their inbox or retry, without claiming delivery.
+There is no delivery queue or automatic retry. Other mail-dependent operations
+fail with a generic server error, while previously committed database changes remain.
+
+Regression coverage also checks password-login rejection order, the password 2FA
+challenge, CSRF rejection before database access, refresh replay revocation and
+logout ownership. Cookie defaults and CSRF derivation remain compatible with the
+existing frontend after moving session operations into `AuthSessionService`.
+
+OAuth login signs its tokens before persistence. Session creation and the success
+audit commit in one transaction, which locks the user row and rechecks lockout
+and 2FA state. When 2FA is required, challenge consumption joins the same
+transaction and rechecks expiry against the current database time. Signing or
+database failures leave no partial session; an unexpired challenge can be retried
+while verification attempts remain. Failed requests still count toward its five
+attempt limit. Regression tests cover rollback, concurrent verification and
+challenge expiry while waiting for the user lock.
+
+OAuth state consumption, OAuth 2FA attempts, exchange-code storage/consumption
+and refresh rotation lock the affected row before checking expiry using
+`clock_timestamp()` in the same transaction. This rejects credentials that expire
+while waiting even when the lock holder does not modify the row. PostgreSQL's
+[`CURRENT_TIMESTAMP`](https://www.postgresql.org/docs/current/functions-datetime.html#FUNCTIONS-DATETIME-CURRENT)
+stays fixed at transaction start. Exchange-code storage also rejects a new code
+that has already expired during the wait. Database failures roll back the write
+and release the lock; state cookies are cleared only after successful commit.
+
+Email verification and password reset also acquire the user row lock before
+checking token identity and expiry. OAuth 2FA completion acquires both the user
+and challenge locks before checking challenge expiry and consuming the TOTP step.
+An unchanged row-lock wait cannot extend any of these tokens' validity. Expired
+or replaced tokens cannot commit user changes, sessions or challenge deletion.
+Previously counted OAuth verification attempts remain counted. Database failures
+roll back the protected action and release the locks for retry.
+
+`npm run test:config` covers password byte boundaries, environment validation,
+2FA key encoding, JWT duration consistency and database TLS policy without
+starting PostgreSQL. The integration suite also exercises accepted/rejected
+password sizes through HTTP and checks that production database options refuse
+a PostgreSQL server without TLS. No production database is contacted.
+
+For a real-provider browser check, run `npm run test:oauth:browser`, open
+`http://localhost:5173/login`, use Google, log out, then use GitHub. This
+runner reads this project's `.env` OAuth credentials and uses a disposable
+database. It serves the existing sibling `../my-app-frontend` without editing
+its source, with Vite's cache inside the temporary cluster directory. It
+requires the configured local callback URLs on port 3000 and frontend URL
+on port 5173. Stop the runner by typing `stop` or using Ctrl+C to remove the database.
+Only HTTP paths and statuses are logged; passwords, tokens and provider
+profiles are not printed. Completing this manual check is separate from
+passing the automated fixture tests. No migration is created or applied by
+either runner; schema synchronization is limited to disposable databases.
 
 ```bash
 npm run start:dev          # dev server, watch mode
@@ -317,6 +442,10 @@ npm run seed:admin          # bootstrap an admin user
 ## Security notes
 
 - Passwords hashed with `bcryptjs` (12 salt rounds).
+- Password inputs are limited to 72 UTF-8 bytes, including login and the current
+  password in change-password. Arabic characters and emoji use multiple bytes.
+  Previously stored passwords longer than this limit must be reset to a shorter
+  password; bcrypt could not distinguish suffixes beyond its first 72 bytes.
 - Refresh tokens are hashed before storage and rotated on every use; reuse
   of a stolen/old refresh token revokes the whole session.
 - CSRF protection on `/auth/refresh` is storage-free (HMAC of the session
@@ -332,5 +461,5 @@ npm run seed:admin          # bootstrap an admin user
 - `synchronize` is always `false` — schema changes must go through
   `npm run migration:generate` / `migration:run`.
 - Helmet, scoped CORS with `credentials: true`, and `app.set('trust
-  proxy', 1)` (so `secure` cookies and `req.ip` work correctly behind a
+proxy', 1)` (so `secure` cookies and `req.ip` work correctly behind a
   reverse proxy/load balancer) are configured in `main.ts`.

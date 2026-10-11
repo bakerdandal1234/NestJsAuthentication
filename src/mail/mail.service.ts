@@ -2,6 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 
+export class MailDeliveryError extends Error {
+  constructor(cause: Error) {
+    super('Email delivery failed', { cause });
+    this.name = 'MailDeliveryError';
+  }
+}
+
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
@@ -35,8 +42,9 @@ export class MailService {
     try {
       await this.transporter.sendMail({ from: this.fromAddress, to, subject, html });
     } catch (error) {
-      // Don't leak SMTP errors to the caller/user; log for ops instead.
-      this.logger.error(`Failed to send email to ${to}: ${(error as Error).message}`);
+      if (!(error instanceof Error)) throw error;
+      this.logger.error('Email delivery failed', error.stack);
+      throw new MailDeliveryError(error);
     }
   }
 

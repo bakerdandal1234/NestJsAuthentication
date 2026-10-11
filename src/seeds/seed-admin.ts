@@ -4,6 +4,7 @@ import * as bcrypt from 'bcryptjs';
 import { AppModule } from '../app.module';
 import { UsersService } from '../users/users.service';
 import { AuthorizationService } from '../authorization/authorization.service';
+import { assertPasswordFitsBcrypt } from '../auth/password-limits';
 
 /**
  * Seeds a single bootstrap admin account, from ADMIN_EMAIL / ADMIN_PASSWORD
@@ -40,6 +41,7 @@ async function seed() {
     process.exit(1);
   }
 
+  assertPasswordFitsBcrypt(password);
   const app = await NestFactory.createApplicationContext(AppModule, {
     logger: ['error', 'warn'],
   });

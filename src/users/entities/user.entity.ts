@@ -55,12 +55,7 @@ export class User {
   @Column({ default: false })
   isEmailVerified: boolean;
 
-  // Nullable + unique: lets findByEmailVerificationToken() do an index
-  // lookup instead of a full table scan every time a verification link
-  // is clicked (multiple NULLs are fine — same reasoning as googleId
-  // above). Clearing this to undefined after use (see AuthService) is a
-  // separate security measure and does not replace the need for this
-  // index — the lookup still scans the WHOLE table either way.
+  // A verification token must identify at most one account; consumed tokens become NULL.
   @Index({ unique: true })
   @Column({ nullable: true })
   @Exclude({ toPlainOnly: true })
@@ -89,6 +84,10 @@ export class User {
   @Column({ default: false })
   isTwoFactorEnabled: boolean;
 
+  @Column({ type: 'integer', nullable: true })
+  @Exclude({ toPlainOnly: true })
+  twoFactorLastUsedStep: number | null;
+
   // --- Account lockout ---
   @Column({ default: 0 })
   @Exclude({ toPlainOnly: true })
@@ -97,7 +96,6 @@ export class User {
   @Column({ type: 'timestamptz', nullable: true })
   @Exclude({ toPlainOnly: true })
   lockedUntil?: Date;
-
 
   @OneToMany(() => LoginHistory, (loginHistory) => loginHistory.user)
   loginHistory: LoginHistory[];

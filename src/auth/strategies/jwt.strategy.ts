@@ -9,7 +9,7 @@ export interface JwtPayload {
   sub: string;
   email: string;
   sid?: string;
-  /** Unique per token issuance (crypto.randomUUID()) — see AuthService.issueTokens(). */
+  /** Prevents identical tokens issued for the same session within one second. */
   jti?: string;
 }
 
