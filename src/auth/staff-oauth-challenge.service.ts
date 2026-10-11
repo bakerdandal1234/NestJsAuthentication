@@ -2,7 +2,10 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash, randomBytes } from 'node:crypto';
 import { EntityManager, LessThanOrEqual, Repository } from 'typeorm';
-import { StaffOAuthChallenge } from './staff-oauth-challenge.entity';
+import {
+  StaffOAuthChallenge,
+  STAFF_OAUTH_2FA_MAX_ATTEMPTS,
+} from './staff-oauth-challenge.entity';
 
 export const STAFF_OAUTH_2FA_TTL_SECONDS = 300;
 
@@ -60,7 +63,9 @@ export class StaffOAuthChallengeService {
       .set({ attempts: () => '"attempts" + 1' })
       .where('"tokenHash" = :hash', { hash: tokenHash })
       .andWhere('"expiresAt" > clock_timestamp()')
-      .andWhere('"attempts" < 5')
+      .andWhere('"attempts" < :maxAttempts', {
+        maxAttempts: STAFF_OAUTH_2FA_MAX_ATTEMPTS,
+      })
       .returning('*')
       .execute();
     const challenge = attemptedChallenge.raw[0] as

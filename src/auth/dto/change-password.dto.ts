@@ -15,7 +15,8 @@ export class ChangePasswordDto {
   @IsString()
   @MaxBcryptBytes()
   currentPassword: string;
-
+  
+  
   @IsString()
   @MinLength(8, { message: PASSWORD_MESSAGE })
   @MaxBcryptBytes()

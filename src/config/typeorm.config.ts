@@ -1,5 +1,6 @@
-import { registerAs } from '@nestjs/config';
-import { TypeOrmModuleOptions } from '@nestjs/typeorm';
+import type { TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { databaseOptions } from './database-options';
 
-export default registerAs('database', (): TypeOrmModuleOptions => databaseOptions(process.env));
+export default function typeormConfig(): TypeOrmModuleOptions {
+  return databaseOptions(process.env);
+}

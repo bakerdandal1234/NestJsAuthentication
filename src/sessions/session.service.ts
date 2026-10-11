@@ -109,10 +109,6 @@ export class SessionService {
     return session;
   }
 
-  findByTokenHash(refreshTokenHash: string): Promise<Session | null> {
-    return this.sessionRepository.findOne({ where: { refreshTokenHash } });
-  }
-
   getUserSessions(userId: string): Promise<Session[]> {
     return this.sessionRepository.find({
       where: { userId, revokedAt: IsNull(), expiresAt: MoreThan(new Date()) },

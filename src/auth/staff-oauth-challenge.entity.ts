@@ -1,5 +1,14 @@
-import { Column, Entity, Index, JoinColumn, ManyToOne, PrimaryColumn } from 'typeorm';
+import {
+  Column,
+  Entity,
+  Index,
+  JoinColumn,
+  ManyToOne,
+  PrimaryColumn,
+} from 'typeorm';
 import { User } from '../users/entities/user.entity';
+
+export const STAFF_OAUTH_2FA_MAX_ATTEMPTS = 5;
 
 @Entity('staff_oauth_challenges')
 export class StaffOAuthChallenge {

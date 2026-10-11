@@ -607,9 +607,13 @@ test('MailService propagates failed verification delivery with its original caus
 });
 
 test('refresh rejects malformed JWT claims before any database lookup', async (context) => {
-  const lookup = context.mock.method(sessions, 'findById', async () => {
-    throw new Error('Must not reach database');
-  });
+  const lookup = context.mock.method(
+    sessions,
+    'requireActiveSession',
+    async () => {
+      throw new Error('Must not reach database');
+    },
+  );
   for (const claims of [
     { sub: randomUUID() },
     { sub: 42, sid: randomUUID() },
@@ -636,11 +640,19 @@ test('refresh maps a missing session to 401 but propagates unexpected database a
     { secret: testConfig.JWT_REFRESH_SECRET },
   );
   const csrf = auth.computeCsrfToken(sid);
-  await assert.rejects(auth.refreshTokens(token, csrf), statusIs(401));
-  const databaseError = new Error('Database unavailable for test');
-  const lookup = context.mock.method(sessions, 'findById', async () => {
-    throw databaseError;
+  await assert.rejects(auth.refreshTokens(token, csrf), (error) => {
+    assert.equal(error.getStatus(), 401);
+    assert.equal(error.message, 'Invalid or expired refresh token');
+    return true;
   });
+  const databaseError = new Error('Database unavailable for test');
+  const lookup = context.mock.method(
+    sessions,
+    'requireActiveSession',
+    async () => {
+      throw databaseError;
+    },
+  );
   await assert.rejects(
     auth.refreshTokens(token, csrf),
     (error) => error === databaseError,
@@ -656,6 +668,49 @@ test('refresh maps a missing session to 401 but propagates unexpected database a
   );
 });
 
+for (const invalidState of ['revoked', 'expired', 'owned by another user']) {
+  test(`refresh rejects a session that is ${invalidState} with the refresh error and no persistence changes`, async () => {
+    const user = await account({}, 0);
+    const login = await auth.login(user.email, oldPassword, undefined, {});
+    const repository = database.getRepository(Session);
+    if (invalidState === 'revoked') {
+      await repository.update(
+        { id: login.sessionId },
+        { revokedAt: new Date() },
+      );
+    } else if (invalidState === 'expired') {
+      await repository.update(
+        { id: login.sessionId },
+        { expiresAt: new Date(Date.now() - 1_000) },
+      );
+    } else {
+      const otherUser = await account({}, 0);
+      await repository.update(
+        { id: login.sessionId },
+        { userId: otherUser.id },
+      );
+    }
+    const beforeRefresh = await repository.findOneByOrFail({
+      id: login.sessionId,
+    });
+    await assert.rejects(
+      auth.refreshTokens(
+        login.refreshToken,
+        auth.computeCsrfToken(login.sessionId),
+      ),
+      (error) => {
+        assert.equal(error.getStatus(), 401);
+        assert.equal(error.message, 'Invalid or expired refresh token');
+        return true;
+      },
+    );
+    assert.deepEqual(
+      await repository.findOneByOrFail({ id: login.sessionId }),
+      beforeRefresh,
+    );
+  });
+}
+
 test('HTTP refresh reports database outages as a generic 500 rather than blaming the refresh token', async (context) => {
   const user = await account({}, 0);
   const sid = randomUUID();
@@ -663,7 +718,7 @@ test('HTTP refresh reports database outages as a generic 500 rather than blaming
     { sub: user.id, sid },
     { secret: testConfig.JWT_REFRESH_SECRET },
   );
-  context.mock.method(sessions, 'findById', async () => {
+  context.mock.method(sessions, 'requireActiveSession', async () => {
     throw new Error('Private database diagnostics');
   });
   const response = await request('/auth/refresh', {
@@ -904,9 +959,13 @@ test('password 2FA issues no session for missing secrets or challenges and recor
 test('refresh rejects missing and mismatched CSRF before database access and leaves the session usable', async (context) => {
   const user = await account({}, 0);
   const login = await auth.login(user.email, oldPassword, undefined, {});
-  const lookup = context.mock.method(sessions, 'findById', async () => {
-    throw new Error('CSRF rejection must precede database access');
-  });
+  const lookup = context.mock.method(
+    sessions,
+    'requireActiveSession',
+    async () => {
+      throw new Error('CSRF rejection must precede database access');
+    },
+  );
   for (const csrf of [
     undefined,
     '',

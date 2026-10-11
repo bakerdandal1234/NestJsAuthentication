@@ -16,13 +16,11 @@ import { AppService } from './app.service';
 import { AuthorizationModule } from './authorization/authorization.module';
 import { PermissionsGuard } from './common/guards/permissions.guard';
 
-
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
       validate,
-      load: [typeormConfig],
     }),
     TypeOrmModule.forRootAsync({
       useFactory: typeormConfig,
@@ -39,7 +37,7 @@ import { PermissionsGuard } from './common/guards/permissions.guard';
     UsersModule,
     MailModule,
     SessionsModule,
-    AuthorizationModule
+    AuthorizationModule,
   ],
   controllers: [AppController],
   providers: [

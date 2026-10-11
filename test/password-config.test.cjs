@@ -1,11 +1,15 @@
 require('reflect-metadata');
 const assert = require('node:assert/strict');
+const { execFile } = require('node:child_process');
 const { test } = require('node:test');
 const { rootCertificates } = require('node:tls');
+const { promisify } = require('node:util');
 const { plainToInstance } = require('class-transformer');
 const { validateSync } = require('class-validator');
+const { NestFactory } = require('@nestjs/core');
 const { JwtService } = require('@nestjs/jwt');
 const { ConfigService } = require('@nestjs/config');
+const { DataSource } = require('typeorm');
 const bcrypt = require('bcryptjs');
 const { AuthService } = require('../src/auth/auth.service');
 const { AuthSessionService } = require('../src/auth/auth-session.service');
@@ -21,6 +25,7 @@ const { parseTokenDurationMs } = require('../src/config/token-duration');
 const { decodeTwoFactorKey } = require('../src/config/two-factor-key');
 const { databaseOptions } = require('../src/config/database-options');
 const { databaseTlsOptions } = require('../src/config/database-tls');
+const { startPostgres, stopPostgres } = require('./helpers/postgres.cjs');
 
 const validPassword = 'ValidPassword!234';
 
@@ -518,6 +523,100 @@ test('the shared database factory rejects missing credentials and malformed port
     assert.throws(
       () => databaseOptions({ ...validEnv, DB_PORT: port }),
       /DB_PORT/,
+    );
+  }
+});
+
+test('the real AppModule and migration CLI initialize the same database without schema synchronization', async (context) => {
+  const postgres = await startPostgres();
+  const previousEnvironment = { ...process.env };
+  let app;
+  let cliDatabase;
+  context.after(async () => {
+    try {
+      if (app) await app.close();
+      if (cliDatabase?.isInitialized) await cliDatabase.destroy();
+    } finally {
+      for (const variable of Object.keys(process.env)) {
+        if (!(variable in previousEnvironment)) delete process.env[variable];
+      }
+      Object.assign(process.env, previousEnvironment);
+      await stopPostgres(postgres.directory);
+    }
+  });
+  Object.assign(process.env, {
+    ...validEnv,
+    NODE_ENV: 'test',
+    DB_HOST: postgres.connection.host,
+    DB_PORT: String(postgres.connection.port),
+    DB_USERNAME: postgres.connection.username,
+    DB_NAME: postgres.connection.database,
+    DB_SSL_CA: '',
+    COOKIE_SAME_SITE: 'lax',
+  });
+
+  const { AppModule } = require('../src/app.module');
+  app = await NestFactory.createApplicationContext(AppModule, {
+    logger: false,
+    abortOnError: false,
+  });
+  const nestDatabase = app.get(DataSource);
+  assert.equal(nestDatabase.isInitialized, true);
+  assert.equal(nestDatabase.options.port, postgres.connection.port);
+  assert.equal(nestDatabase.options.synchronize, false);
+  assert.equal(nestDatabase.options.ssl, false);
+  assert.equal(app.get(ConfigService).get('DB_PORT'), postgres.connection.port);
+  assert.deepEqual(
+    await nestDatabase.query(
+      'SELECT tablename FROM pg_tables WHERE schemaname = $1',
+      ['public'],
+    ),
+    [],
+  );
+
+  cliDatabase = require('../src/config/data-source').AppDataSource;
+  for (const option of [
+    'type',
+    'host',
+    'port',
+    'username',
+    'password',
+    'database',
+    'entities',
+    'synchronize',
+    'logging',
+    'ssl',
+  ]) {
+    assert.deepEqual(
+      nestDatabase.options[option],
+      cliDatabase.options[option],
+      option,
+    );
+  }
+  assert.deepEqual(cliDatabase.options.migrations, ['src/migrations/*.ts']);
+  await cliDatabase.initialize();
+  assert.ok(cliDatabase.migrations.length > 0);
+  assert.deepEqual(
+    await cliDatabase.query(
+      'SELECT tablename FROM pg_tables WHERE schemaname = $1',
+      ['public'],
+    ),
+    [],
+  );
+  const { stdout } = await promisify(execFile)(
+    process.execPath,
+    [
+      'node_modules/typeorm/cli-ts-node-commonjs.js',
+      '-d',
+      'src/config/data-source.ts',
+      'migration:show',
+    ],
+    { windowsHide: true, timeout: 60_000 },
+  );
+  for (const migration of cliDatabase.migrations) {
+    assert.ok(
+      stdout.includes(migration.name),
+      `CLI did not discover ${migration.name}`,
     );
   }
 });

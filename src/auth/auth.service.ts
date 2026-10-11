@@ -22,12 +22,16 @@ import { AuthSessionService } from './auth-session.service';
 import type { StaffOAuthChallenge } from './staff-oauth-challenge.entity';
 import { TwoFactorCodeRejectedError } from './two-factor-step';
 
+const SECOND_MS = 1000;
+const MINUTE_MS = 60 * SECOND_MS;
+const HOUR_MS=60 * MINUTE_MS;
+
+
 const SALT_ROUNDS = 12;
 const MAX_FAILED_ATTEMPTS = 5;
-const LOCK_DURATION_MS = 15 * 60 * 1000; // 15 minutes
-const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
-const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000; // 1 hour
-
+const LOCK_DURATION_MS = 15 * MINUTE_MS; // 15 minutes
+const EMAIL_VERIFICATION_TTL_MS = 24 * HOUR_MS; // 24 hours
+const PASSWORD_RESET_TTL_MS = 1 * HOUR_MS; // 1 hour
 export interface LoginContext {
   ipAddress?: string;
   userAgent?: string;

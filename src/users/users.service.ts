@@ -12,7 +12,10 @@ import { User } from './entities/user.entity';
 import { LoginHistory } from './entities/login-history.entity';
 import { CreateUserDto } from './dto/create-user.dto';
 import { Session } from '../sessions/entities/session.entity';
-import { StaffOAuthChallenge } from '../auth/staff-oauth-challenge.entity';
+import {
+  StaffOAuthChallenge,
+  STAFF_OAUTH_2FA_MAX_ATTEMPTS,
+} from '../auth/staff-oauth-challenge.entity';
 import type { OAuthProfile } from '../auth/interfaces/oauth-profile.interface';
 import {
   consumeTwoFactorStep,
@@ -385,7 +388,9 @@ export class UsersService {
       .andWhere('"userId" = :userId', { userId })
       .andWhere('"secretFingerprint" = :secretFingerprint')
       .andWhere('"expiresAt" > clock_timestamp()')
-      .andWhere('"attempts" BETWEEN 1 AND 5')
+      .andWhere('"attempts" BETWEEN 1 AND :maxAttempts', {
+        maxAttempts: STAFF_OAUTH_2FA_MAX_ATTEMPTS,
+      })
       .execute();
     if (consumedChallenge.affected !== 1)
       throw this.invalidOAuthLoginError(challenge);

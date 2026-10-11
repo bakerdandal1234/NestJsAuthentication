@@ -359,7 +359,11 @@ covers expiry during real row-lock waits, concurrent consumers and rollback.
 PostgreSQL tools
 `initdb` and `pg_ctl` must be available on `PATH`. The tests start a disposable
 PostgreSQL cluster bound to `127.0.0.1` on an available port, then stop and remove
-it. They do not read `.env` or connect to the application's database. Coverage
+it. They connect only to disposable databases. The OAuth test module ignores
+`.env` and inherited environment settings. The real `AppModule` and TypeORM CLI
+configuration test reads `.env`, but sets explicit test values and the disposable
+cluster's connection details before loading either module. The CLI subprocess
+inherits those values, and the test restores `process.env` afterward. Coverage
 includes token reuse, concurrent resets, expiry, replacement and rollback when
 session revocation fails. OAuth tests run the real Nest controllers, guards,
 Passport strategies and services against PostgreSQL. Only provider HTTP

@@ -247,21 +247,12 @@ export class AuthSessionService {
     sessionId: string,
     userId: string,
   ): Promise<Session> {
-    let session: Session;
     try {
-      session = await this.sessionService.findById(sessionId);
+      return await this.sessionService.requireActiveSession(sessionId, userId);
     } catch (error) {
-      if (!(error instanceof NotFoundException)) throw error;
+      if (!(error instanceof UnauthorizedException)) throw error;
       throw this.invalidRefreshTokenError();
     }
-    if (
-      session.userId !== userId ||
-      session.revokedAt ||
-      session.expiresAt.getTime() <= Date.now()
-    ) {
-      throw this.invalidRefreshTokenError();
-    }
-    return session;
   }
 
   private async rotateSession(

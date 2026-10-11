@@ -525,6 +525,62 @@ test('expiry after row lock: concurrent challenge attempts still enforce the fiv
   );
 });
 
+// Final-consumption boundaries are checked after the attempt transaction has committed.
+for (const [attempts, expectedSessions] of [
+  [0, 0],
+  [1, 1],
+  [5, 1],
+  [6, 0],
+]) {
+  test(`OAuth challenge attempt boundary: final consumption at ${attempts} permits ${expectedSessions} session`, async (context) => {
+    const flow = await stagedOAuthVerification(context);
+    try {
+      const repository = database.getRepository(StaffOAuthChallenge);
+      const tokenHash = digest(flow.token);
+      assert.equal(
+        (await repository.findOneByOrFail({ tokenHash })).attempts,
+        1,
+      );
+      await repository.update({ tokenHash }, { attempts });
+      const beforeChallenge = await repository.findOneByOrFail({ tokenHash });
+      const beforeUser = await storedUser(flow.user.id);
+      flow.proceed();
+      if (expectedSessions === 1) {
+        assert.ok((await flow.completion).accessToken);
+        assert.equal(await repository.findOneBy({ tokenHash }), null);
+        assert.equal(
+          (await storedUser(flow.user.id)).twoFactorLastUsedStep,
+          flow.step,
+        );
+      } else {
+        await assert.rejects(flow.completion, (error) => {
+          assert.equal(error.getStatus(), 401);
+          assert.equal(
+            error.message,
+            'Invalid or expired two-factor challenge',
+          );
+          return true;
+        });
+        assert.deepEqual(
+          await repository.findOneByOrFail({ tokenHash }),
+          beforeChallenge,
+        );
+        assert.deepEqual(await storedUser(flow.user.id), beforeUser);
+      }
+      assert.equal((await userSessions(flow.user.id)).length, expectedSessions);
+      assert.equal(
+        await database
+          .getRepository(LoginHistory)
+          .countBy({ userId: flow.user.id, success: true }),
+        expectedSessions,
+      );
+    } finally {
+      flow.proceed();
+      await flow.completion.catch(() => {});
+    }
+  });
+}
+
 test('expiry after row lock: concurrent refreshes still accept one request and revoke the session after reuse', async () => {
   const login = await passwordSession();
   const csrf = auth.computeCsrfToken(login.sessionId);
